@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/auth"
 	"github.com/couchbase/sync_gateway/base"
@@ -770,13 +769,8 @@ func IsMissingDDocError(err error) bool {
 		return true
 	}
 
-	// gocb
+	// gocb (legacy)
 	if strings.Contains(unwrappedErr.Error(), "not_found") {
-		return true
-	}
-
-	// gocb v2
-	if errors.Is(err, gocb.ErrDesignDocumentNotFound) {
 		return true
 	}
 

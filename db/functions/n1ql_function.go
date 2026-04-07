@@ -12,12 +12,10 @@ package functions
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
@@ -69,15 +67,8 @@ func (fn *n1qlInvocation) Iterate() (sgbucket.QueryResultIterator, error) {
 		base.RequestPlus, false, fn.db.DbStats, fn.db.Options.SlowQueryWarningThreshold)
 
 	if err != nil {
-		// Return a friendlier error:
-		var qe *gocb.QueryError
-		if errors.As(err, &qe) {
-			base.WarnfCtx(fn.ctx, "Error running query %q: %v", fn.name, err)
-			return nil, base.HTTPErrorf(http.StatusInternalServerError, "Query %q: %s", fn.name, qe.Errors[0].Message)
-		} else {
-			base.WarnfCtx(fn.ctx, "Unknown error running query %q: %T %#v", fn.name, err, err)
-			return nil, base.HTTPErrorf(http.StatusInternalServerError, "Unknown error running query %q (see logs)", fn.name)
-		}
+		base.WarnfCtx(fn.ctx, "Error running query %q: %v", fn.name, err)
+		return nil, base.HTTPErrorf(http.StatusInternalServerError, "Query %q: %s", fn.name, err)
 	}
 	// Do a final timeout check, so the caller will know not to do any more work if time's up:
 	return iter, db.CheckTimeout(fn.ctx)

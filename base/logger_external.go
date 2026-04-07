@@ -14,24 +14,16 @@ import (
 	"context"
 
 	"github.com/couchbase/clog"
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbaselabs/rosmar"
 )
 
-// remapGoCBLogLevels controls whether the gocb and gocbcore log levels are remapped to match the verbosity of SG's log levels.
-const remapGoCBLogLevels = true
-
 // This file implements wrappers around the loggers of external packages
-// so that all of SG's logging output is consistent
+// so that all of SG's logging output is consistent.
 func initExternalLoggers() {
-	if remapGoCBLogLevels {
-		gocb.SetLogger(GoCBLoggerRemapped{})
-		gocbcore.SetLogger(GoCBCoreLoggerRemapped{})
-	} else {
-		gocb.SetLogger(GoCBLogger{})
-		gocbcore.SetLogger(GoCBCoreLogger{})
-	}
+	// gocbcore is still used for DCP — register a logger that maps its levels
+	// into SG's logging system.
+	gocbcore.SetLogger(GoCBCoreLoggerRemapped{})
 
 	clog.SetLoggerCallback(ClogCallback)
 	// Set the clog level to DEBUG and do filtering for debug inside ClogCallback functions
@@ -54,75 +46,34 @@ func updateExternalLoggers() {
 }
 
 // **************************************************
-// Implementation of github.com/couchbase/gocb.Logger
-// **************************************************
-type GoCBLogger struct{}
-
-var _ gocb.Logger = GoCBLogger{}
-
-// Log wraps the levelled SG logs for gocb to use. Log levels are not changed or remapped.
-func (GoCBLogger) Log(level gocb.LogLevel, offset int, format string, v ...any) error {
-	switch level {
-	case gocb.LogError:
-		logTo(context.TODO(), LevelError, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocb.LogWarn:
-		logTo(context.TODO(), LevelWarn, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocb.LogInfo:
-		logTo(context.TODO(), LevelInfo, KeyGoCB, format, v...)
-	case gocb.LogDebug:
-		logTo(context.TODO(), LevelDebug, KeyGoCB, format, v...)
-	case gocb.LogTrace, gocb.LogMaxVerbosity:
-		logTo(context.TODO(), LevelTrace, KeyGoCB, format, v...)
-	case gocb.LogSched:
-		logTo(context.TODO(), LevelTrace, KeyGoCB, "<SCHED>: "+format, v...)
-	}
-	return nil
-}
-
-type GoCBCoreLogger struct{}
-
-var _ gocbcore.Logger = GoCBCoreLogger{}
-
-func (GoCBCoreLogger) Log(level gocbcore.LogLevel, offset int, format string, v ...any) error {
-	return GoCBLogger{}.Log(gocb.LogLevel(level), offset, format, v...)
-}
-
-// **************************************************
-// Implementation of github.com/couchbase/gocb.Logger
-// **************************************************
-type GoCBLoggerRemapped struct{}
-
-var _ gocb.Logger = GoCBLoggerRemapped{}
-
-// Log wraps the levelled SG logs for gocb to use. Log levels are mapped as follows:
+// gocbcore Logger (used for DCP)
 //
-//	Error  -> SG Error
-//	Warn   -> SG Warn
-//	Info   -> SG Debug
-//	Debug  -> SG Trace
-//	Trace  -> SG Trace
-//	Sched  -> SG Trace
-//	Others -> no-op
-func (GoCBLoggerRemapped) Log(level gocb.LogLevel, offset int, format string, v ...any) error {
-	switch level {
-	case gocb.LogError:
-		logTo(context.TODO(), LevelError, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocb.LogWarn:
-		logTo(context.TODO(), LevelWarn, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocb.LogInfo:
-		logTo(context.TODO(), LevelDebug, KeyGoCB, format, v...)
-	case gocb.LogDebug, gocb.LogTrace, gocb.LogSched, gocb.LogMaxVerbosity:
-		logTo(context.TODO(), LevelTrace, KeyGoCB, format, v...)
-	}
-	return nil
-}
+// Log levels are remapped to match SG verbosity:
+//
+//	Error  → SG Error
+//	Warn   → SG Warn
+//	Info   → SG Debug  (gocbcore Info is verbose)
+//	Debug  → SG Trace
+//	Trace+ → SG Trace
+//
+// **************************************************
 
 type GoCBCoreLoggerRemapped struct{}
 
 var _ gocbcore.Logger = GoCBCoreLoggerRemapped{}
 
 func (GoCBCoreLoggerRemapped) Log(level gocbcore.LogLevel, offset int, format string, v ...any) error {
-	return GoCBLoggerRemapped{}.Log(gocb.LogLevel(level), offset, format, v...)
+	switch level {
+	case gocbcore.LogError:
+		logTo(context.TODO(), LevelError, KeyAll, KeyGoCB.String()+": "+format, v...)
+	case gocbcore.LogWarn:
+		logTo(context.TODO(), LevelWarn, KeyAll, KeyGoCB.String()+": "+format, v...)
+	case gocbcore.LogInfo:
+		logTo(context.TODO(), LevelDebug, KeyGoCB, format, v...)
+	case gocbcore.LogDebug, gocbcore.LogTrace, gocbcore.LogSched, gocbcore.LogMaxVerbosity:
+		logTo(context.TODO(), LevelTrace, KeyGoCB, format, v...)
+	}
+	return nil
 }
 
 // **************************************************************************
