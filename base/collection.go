@@ -63,6 +63,7 @@ func GetGoCBv2Bucket(ctx context.Context, spec BucketSpec) (*GocbV2Bucket, error
 	seedConfig := buildSeedConfig(connSpec)
 
 	agentOpts := gocbcorex.AgentOptions{
+		Logger:        GocbcorexLogger(),
 		Authenticator: authenticator,
 		TLSConfig:     tlsConfig,
 		BucketName:    spec.BucketName,

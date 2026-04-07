@@ -40,8 +40,6 @@ github.com/couchbase/gocbcore/v10 v10.9.1 h1:x+sEFySGb87TthnmI5TsmTRd7jal17SwcUv
 github.com/couchbase/gocbcore/v10 v10.9.1/go.mod h1:OWKfU9R5Nm5V3QZBtfdZl5qCfgxtxTqOgXiNr4pn9/c=
 github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8 h1:WwGhY3TYn2INQo88yzEhUMYFlgjRInA1dgfEa3UhAxw=
 github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8/go.mod h1:AUR8DPPmvM+uMkb+Q01Y0mMXINdEY/jUL/qE+kPJ67s=
-github.com/couchbase/gocbcorex v0.0.0-20260319214642-92fd2976fad9 h1:uKC5q7dFzm4//pv9OghMeAvAMccmZspANgmIYEvsJ1A=
-github.com/couchbase/gocbcorex v0.0.0-20260319214642-92fd2976fad9/go.mod h1:yhzN/7UDbjYEYD9Ee7gOMD5f4ViYT4QjnnjrATiwcoQ=
 github.com/couchbase/gomemcached v0.2.1 h1:lDONROGbklo8pOt4Sr4eV436PVEaKDr3o9gUlhv9I2U=
 github.com/couchbase/gomemcached v0.2.1/go.mod h1:mxliKQxOv84gQ0bJWbI+w9Wxdpt9HjDvgW9MjCym5Vo=
 github.com/couchbase/goprotostellar v1.0.5 h1:pmR4H87zbYymIdTR1owyUZsfQ7NupkfCuNLW4FIPBhE=
@@ -66,8 +64,6 @@ github.com/couchbaselabs/go-fleecedelta v0.0.0-20220909152808-6d09efa7a338 h1:xM
 github.com/couchbaselabs/go-fleecedelta v0.0.0-20220909152808-6d09efa7a338/go.mod h1:0f+dmhfcTKK+4quAe6rwqQUVVWtHX/eztNB8cmBUniQ=
 github.com/couchbaselabs/gocaves/client v0.0.0-20250107114554-f96479220ae8 h1:MQfvw4BiLTuyR69FuA5Kex+tXUeLkH+/ucJfVL1/hkM=
 github.com/couchbaselabs/gocaves/client v0.0.0-20250107114554-f96479220ae8/go.mod h1:AVekAZwIY2stsJOMWLAS/0uA/+qdp7pjO8EHnl61QkY=
-github.com/couchbaselabs/gocbconnstr v1.0.5 h1:e0JokB5qbcz7rfnxEhNRTKz8q1svoRvDoZihsiwNigA=
-github.com/couchbaselabs/gocbconnstr v1.0.5/go.mod h1:KV3fnIKMi8/AzX0O9zOrO9rofEqrRF1d2rG7qqjxC7o=
 github.com/couchbaselabs/gocbconnstr/v2 v2.0.0 h1:HU9DlAYYWR69jQnLN6cpg0fh0hxW/8d5hnglCXXjW78=
 github.com/couchbaselabs/gocbconnstr/v2 v2.0.0/go.mod h1:o7T431UOfFVHDNvMBUmUxpHnhivwv7BziUao/nMl81E=
 github.com/couchbaselabs/rosmar v0.0.0-20260326114257-7d426e469ef0 h1:mCit3+zS3QZH0CGTYEZpCS74tvrmRlBU9jAGSpNWxmg=
@@ -222,6 +218,8 @@ golang.org/x/crypto v0.49.0 h1:+Ng2ULVvLHnJ/ZFEq4KdcDd/cfjrrjjNSXNzxg0Y4U4=
 golang.org/x/crypto v0.49.0/go.mod h1:ErX4dUh2UM+CFYiXZRTcMpEcN8b/1gxEuv3nODoYtCA=
 golang.org/x/exp v0.0.0-20260112195511-716be5621a96 h1:Z/6YuSHTLOHfNFdb8zVZomZr7cqNgTJvA8+Qz75D8gU=
 golang.org/x/exp v0.0.0-20260112195511-716be5621a96/go.mod h1:nzimsREAkjBCIEFtHiYkrJyT+2uy9YZJB7H1k68CXZU=
+golang.org/x/mod v0.33.0 h1:tHFzIWbBifEmbwtGz65eaWyGiGZatSrT9prnU8DbVL8=
+golang.org/x/mod v0.33.0/go.mod h1:swjeQEj+6r7fODbD2cqrnje9PnziFuw4bmLbBZFrQ5w=
 golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
 golang.org/x/net v0.52.0 h1:He/TN1l0e4mmR3QqHMT2Xab3Aj3L9qjbhRm78/6jrW0=
 golang.org/x/net v0.52.0/go.mod h1:R1MAz7uMZxVMualyPXb+VaqGSa3LIaUqk0eEt3w36Sw=

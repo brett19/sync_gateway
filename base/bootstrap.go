@@ -222,6 +222,7 @@ func (cc *CouchbaseCluster) createAgent(ctx context.Context, bucketName string) 
 	seedConfig := buildSeedConfig(connSpec)
 
 	agent, err := gocbcorex.CreateAgent(ctx, gocbcorex.AgentOptions{
+		Logger:        GocbcorexLogger(),
 		Authenticator: auth,
 		TLSConfig:     cc.tlsConfig,
 		SeedConfig:    seedConfig,
