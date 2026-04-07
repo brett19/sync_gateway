@@ -10,8 +10,6 @@ require (
 	github.com/couchbase/cbgt v1.4.14
 	github.com/couchbase/clog v0.1.0
 	github.com/couchbase/go-blip v0.0.0-20260106113615-002c1b20b67a
-	github.com/couchbase/gocb/v2 v2.12.1
-	github.com/couchbase/gocbcore/v10 v10.9.1
 	github.com/couchbase/gocbcorex v0.0.0-20260319214642-92fd2976fad9
 	github.com/couchbase/gomemcached v0.2.1
 	github.com/couchbase/sg-bucket v0.0.0-20260318163448-98d99b4d9cd0
@@ -43,13 +41,16 @@ require (
 )
 
 require (
+	github.com/couchbase/gocbcore/v10 v10.9.1 // indirect
+	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
+)
+
+require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/couchbase/blance v0.1.6 // indirect
 	github.com/couchbase/cbauth v0.1.13 // indirect
 	github.com/couchbase/go-couchbase v0.1.1 // indirect
-	github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8 // indirect
-	github.com/couchbase/goprotostellar v1.0.5 // indirect
 	github.com/couchbase/goutils v0.1.2 // indirect
 	github.com/couchbase/tools-common/cloud/v8 v8.1.3 // indirect
 	github.com/couchbase/tools-common/fs v1.0.3 // indirect
@@ -82,7 +83,6 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
@@ -92,8 +92,6 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260406210006-6f92a3bedf2d // indirect
-	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/sourcemap.v1 v1.0.5 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

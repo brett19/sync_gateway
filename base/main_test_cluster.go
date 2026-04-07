@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex"
 )
 
 const TestClusterReadyTimeout = 90 * time.Second
 
-// tbpCluster represents a gocb v2 cluster
+// tbpCluster represents a cluster connection for testing
 type tbpCluster struct {
 	// version is the Couchbase Server version
 	version ComparableBuildVersion
@@ -32,8 +32,8 @@ type tbpCluster struct {
 	ee bool
 	// clusterSpec is the authentication and connection information for the cluster.
 	clusterSpec CouchbaseClusterSpec
-	// agent is a gocbcore agent for the cluster.
-	agent *gocbcore.Agent
+	// agent is a gocbcorex agent for the cluster.
+	agent *gocbcorex.Agent
 
 	storageBackend string
 }
@@ -42,8 +42,7 @@ type tbpCluster struct {
 func newTestCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec) (*tbpCluster, error) {
 	agent, err := NewClusterAgent(ctx, clusterSpec,
 		CouchbaseClusterWaitUntilReadyOptions{
-			Timeout:       TestClusterReadyTimeout,
-			RetryStrategy: gocbcore.NewBestEffortRetryStrategy(nil),
+			Timeout: TestClusterReadyTimeout,
 		})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't create cluster agent: %w", err)
@@ -129,12 +128,15 @@ func (c *tbpCluster) getBucketNames() ([]string, error) {
 
 // MgmtRequest sends a management request to the cluster and returns the response body, status code, and error.
 func (c *tbpCluster) MgmtRequest(method, path string, contentType string, body io.Reader) ([]byte, int, error) {
-	mgmtEps := c.agent.MgmtEps()
+	mgmtEps, err := c.agent.GetMgmtEndpoints()
+	if err != nil {
+		return nil, 0, fmt.Errorf("couldn't get management endpoints: %w", err)
+	}
 	if len(mgmtEps) == 0 {
 		return nil, 0, fmt.Errorf("no management endpoints available for cluster %q", c.clusterSpec.Server)
 	}
 	return MgmtRequest(
-		c.agent.HTTPClient(),
+		http.DefaultClient,
 		mgmtEps[0],
 		method,
 		path,
@@ -145,14 +147,17 @@ func (c *tbpCluster) MgmtRequest(method, path string, contentType string, body i
 	)
 }
 
-// GetCouchbaseServerVersion retrieves the Couchbase Server version via a gocbcore.Agent
-func GetCouchbaseServerVersion(agent *gocbcore.Agent, clusterSpec CouchbaseClusterSpec) (version *ComparableBuildVersion, ee bool, err error) {
-	mgmtEps := agent.MgmtEps()
+// GetCouchbaseServerVersion retrieves the Couchbase Server version via a gocbcorex.Agent
+func GetCouchbaseServerVersion(agent *gocbcorex.Agent, clusterSpec CouchbaseClusterSpec) (version *ComparableBuildVersion, ee bool, err error) {
+	mgmtEps, epsErr := agent.GetMgmtEndpoints()
+	if epsErr != nil {
+		return nil, false, fmt.Errorf("failed to get management endpoints: %w", epsErr)
+	}
 	if len(mgmtEps) == 0 {
 		return nil, false, fmt.Errorf("no management endpoints available")
 	}
 	output, status, err := MgmtRequest(
-		agent.HTTPClient(),
+		http.DefaultClient,
 		mgmtEps[0],
 		http.MethodGet,
 		"/pools/default",
@@ -256,7 +261,7 @@ func (c *tbpCluster) removeBucket(name string) error {
 
 
 
-// close shuts down the running gocbcore agent for the cluster.
+// close shuts down the running agent for the cluster.
 func (c *tbpCluster) close() error {
 	return c.agent.Close()
 }

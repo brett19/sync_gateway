@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/couchbase/go-blip"
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex/memdx"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/channels"
@@ -2730,11 +2730,11 @@ func TestSendRevisionNoRevHandling(t *testing.T) {
 		expectNoRev bool
 	}{
 		{
-			error:       gocb.ErrDocumentNotFound,
+			error:       memdx.ErrDocNotFound,
 			expectNoRev: true,
 		},
 		{
-			error:       gocb.ErrOverload,
+			error:       memdx.ErrTmpFail,
 			expectNoRev: false,
 		},
 	}
@@ -3412,13 +3412,13 @@ func TestChangesFeedExitDisconnect(t *testing.T) {
 			LeakyBucketConfig: &base.LeakyBucketConfig{
 				QueryCallback: func(ddoc, viewname string, params map[string]any) error {
 					if viewname == "channels" && shouldChannelQueryError.Load() {
-						return gocb.ErrTimeout
+						return base.ErrTimeout
 					}
 					return nil
 				},
 				N1QLQueryCallback: func(_ context.Context, statement string, params map[string]any, consistency base.ConsistencyMode, adhoc bool) error {
 					if strings.Contains(statement, "sg_channels") && shouldChannelQueryError.Load() {
-						return gocb.ErrTimeout
+						return base.ErrTimeout
 					}
 					return nil
 				},

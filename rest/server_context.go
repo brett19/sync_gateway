@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +32,7 @@ import (
 	"github.com/couchbase/sync_gateway/db/functions"
 	"github.com/shirou/gopsutil/v4/mem"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
@@ -88,7 +87,7 @@ type ServerContext struct {
 	_httpServers     map[serverType]*serverInfo // A list of HTTP servers running under the ServerContext
 	_httpServersLock sync.RWMutex               // Lock for managing access to _httpServers
 
-	GoCBAgent                     *gocbcore.Agent      // GoCB Agent to use when obtaining management endpoints
+	GoCBAgent                     *gocbcorex.Agent     // GoCB Agent to use when obtaining management endpoints
 	NoX509HTTPClient              *http.Client         // httpClient for the cluster that doesn't include x509 credentials, even if they are configured for the cluster
 	hasStarted                    chan struct{}        // A channel that is closed via PostStartup once the ServerContext has fully started
 	LogContextID                  string               // ID to differentiate log messages from different server context
@@ -1847,10 +1846,10 @@ func (sc *ServerContext) updateCalculatedStats(ctx context.Context) {
 
 }
 
-// initializeGoCBAgent Obtains a gocb agent from the current server connection. Requires the agent to be closed after use.
+// initializeGoCBAgent Obtains a gocbcorex agent from the current server connection. Requires the agent to be closed after use.
 // Uses retry loop
-func (sc *ServerContext) initializeGoCBAgent(ctx context.Context) (*gocbcore.Agent, error) {
-	err, agent := base.RetryLoop(ctx, "Initialize Cluster Agent", func() (shouldRetry bool, err error, agent *gocbcore.Agent) {
+func (sc *ServerContext) initializeGoCBAgent(ctx context.Context) (*gocbcorex.Agent, error) {
+	err, agent := base.RetryLoop(ctx, "Initialize Cluster Agent", func() (shouldRetry bool, err error, agent *gocbcorex.Agent) {
 		agent, err = base.NewClusterAgent(
 			ctx,
 			base.CouchbaseClusterSpec{
@@ -1895,16 +1894,14 @@ func (sc *ServerContext) initializeNoX509HttpClient(ctx context.Context) (*http.
 	baseTlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
-	var rootCAs *x509.CertPool
-	tlsRootCAProvider, err := base.GoCBCoreTLSRootCAProvider(ctx, sc.Config.Bootstrap.ServerTLSSkipVerify, sc.Config.Bootstrap.CACertPath)
+	tlsConfig, err := base.GocbcorexTLSConfig(ctx, sc.Config.Bootstrap.ServerTLSSkipVerify, sc.Config.Bootstrap.CACertPath)
 	if err != nil {
 		return nil, err
 	}
-	rootCAs = tlsRootCAProvider()
-	if rootCAs != nil {
-		baseTlsConfig.RootCAs = rootCAs
-		baseTlsConfig.InsecureSkipVerify = false
-	} else {
+	if tlsConfig != nil && tlsConfig.RootCAs != nil {
+		baseTlsConfig.RootCAs = tlsConfig.RootCAs
+		baseTlsConfig.InsecureSkipVerify = tlsConfig.InsecureSkipVerify
+	} else if tlsConfig != nil && tlsConfig.InsecureSkipVerify {
 		baseTlsConfig.InsecureSkipVerify = true
 	}
 
@@ -1970,7 +1967,12 @@ func (sc *ServerContext) ObtainManagementEndpointsAndHTTPClient() ([]string, *ht
 		return nil, nil, fmt.Errorf("unable to obtain agent")
 	}
 
-	return sc.GoCBAgent.MgmtEps(), sc.NoX509HTTPClient, nil
+	mgmtEps, err := sc.GoCBAgent.GetMgmtEndpoints()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get management endpoints: %w", err)
+	}
+
+	return mgmtEps, sc.NoX509HTTPClient, nil
 }
 
 // CheckPermissions is used for Admin authentication to check a CBS RBAC user.

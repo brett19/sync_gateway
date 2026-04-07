@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10/connstr"
+	"github.com/couchbaselabs/gocbconnstr/v2"
 	"github.com/couchbase/sync_gateway/auth"
 	"github.com/couchbase/sync_gateway/base"
 	pkgerrors "github.com/pkg/errors"
@@ -318,7 +318,7 @@ func legacyServerAddressUpgrade(server string) (newServer, username, password st
 		return server, "", "", nil
 	}
 
-	connSpec, err := connstr.Parse(server)
+	connSpec, err := gocbconnstr.Parse(server)
 	if err != nil {
 		return "", "", "", err
 	}

@@ -14,17 +14,12 @@ import (
 	"context"
 
 	"github.com/couchbase/clog"
-	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbaselabs/rosmar"
 )
 
 // This file implements wrappers around the loggers of external packages
 // so that all of SG's logging output is consistent.
 func initExternalLoggers() {
-	// gocbcore is still used for DCP — register a logger that maps its levels
-	// into SG's logging system.
-	gocbcore.SetLogger(GoCBCoreLoggerRemapped{})
-
 	clog.SetLoggerCallback(ClogCallback)
 	// Set the clog level to DEBUG and do filtering for debug inside ClogCallback functions
 	clog.SetLevel(clog.LevelDebug)
@@ -43,37 +38,6 @@ func updateExternalLoggers() {
 	} else {
 		rosmar.SetLogLevel(rosmar.LevelInfo)
 	}
-}
-
-// **************************************************
-// gocbcore Logger (used for DCP)
-//
-// Log levels are remapped to match SG verbosity:
-//
-//	Error  → SG Error
-//	Warn   → SG Warn
-//	Info   → SG Debug  (gocbcore Info is verbose)
-//	Debug  → SG Trace
-//	Trace+ → SG Trace
-//
-// **************************************************
-
-type GoCBCoreLoggerRemapped struct{}
-
-var _ gocbcore.Logger = GoCBCoreLoggerRemapped{}
-
-func (GoCBCoreLoggerRemapped) Log(level gocbcore.LogLevel, offset int, format string, v ...any) error {
-	switch level {
-	case gocbcore.LogError:
-		logTo(context.TODO(), LevelError, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocbcore.LogWarn:
-		logTo(context.TODO(), LevelWarn, KeyAll, KeyGoCB.String()+": "+format, v...)
-	case gocbcore.LogInfo:
-		logTo(context.TODO(), LevelDebug, KeyGoCB, format, v...)
-	case gocbcore.LogDebug, gocbcore.LogTrace, gocbcore.LogSched, gocbcore.LogMaxVerbosity:
-		logTo(context.TODO(), LevelTrace, KeyGoCB, format, v...)
-	}
-	return nil
 }
 
 // **************************************************************************

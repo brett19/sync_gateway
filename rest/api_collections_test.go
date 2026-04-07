@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/sync_gateway/auth"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/channels"
@@ -104,7 +103,8 @@ func TestCollectionsPutDocInKeyspace(t *testing.T) {
 				assert.NotNil(t, docBody)
 
 				defaultDataStore := rt.Bucket().DefaultDataStore()
-				_, err = defaultDataStore.Get(docID, &gocb.GetOptions{})
+				var dummy any
+				_, err = defaultDataStore.Get(docID, &dummy)
 				if rt.GetDatabase().OnlyDefaultCollection() {
 					assert.NoError(t, err)
 				} else {

@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
@@ -671,9 +670,7 @@ func TestBlipLegacyAttachDocUpdate(t *testing.T) {
 		require.Error(t, err)
 		// Confirm correct type of error for both integration test and Walrus
 		if !errors.Is(err, sgbucket.MissingError{Key: v2Key}) {
-			var keyValueErr *gocb.KeyValueError
-			require.True(t, errors.As(err, &keyValueErr))
-			require.Equal(t, keyValueErr.DocumentID, v2Key)
+			require.True(t, base.IsDocNotFoundError(err))
 		}
 	})
 }

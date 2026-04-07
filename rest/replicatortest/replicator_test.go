@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -7960,7 +7959,7 @@ func TestActiveReplicatorChangesFeedExit(t *testing.T) {
 			QueryCallback: func(ddoc, viewname string, params map[string]any) error {
 				if viewname == "channels" && shouldChannelQueryError.Load() {
 					shouldChannelQueryError.Store(false)
-					return gocb.ErrTimeout
+					return base.ErrTimeout
 				}
 				return nil
 			},
@@ -7968,7 +7967,7 @@ func TestActiveReplicatorChangesFeedExit(t *testing.T) {
 				// * channel query uses all docs index
 				if strings.Contains(statement, "sg_allDocs") && shouldChannelQueryError.Load() {
 					shouldChannelQueryError.Store(false)
-					return gocb.ErrTimeout
+					return base.ErrTimeout
 				}
 				return nil
 			},

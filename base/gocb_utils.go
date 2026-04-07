@@ -18,8 +18,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbase/gocbcorex"
+	"github.com/couchbaselabs/gocbconnstr/v2"
 )
 
 // GocbcorexAuthenticator creates a gocbcorex.Authenticator from credentials or certificate paths.
@@ -133,74 +133,43 @@ func MgmtRequest(client *http.Client, mgmtEp, method, uri, contentType, username
 	return respBytes, response.StatusCode, nil
 }
 
-// GoCBCoreTLSRootCAProvider returns a TLS root CA provider function for gocbcore DCP clients.
-// TODO: Remove when DCP is fully migrated to gocbcorex.
-func GoCBCoreTLSRootCAProvider(ctx context.Context, tlsSkipVerify *bool, caCertPath string) (func() *x509.CertPool, error) {
-	certPool, err := getRootCAs(ctx, caCertPath)
-	if err != nil {
-		return nil, err
-	}
-	return func() *x509.CertPool {
-		return certPool
-	}, nil
-}
-
-// CouchbaseClusterWaitUntilReadyOptions provides options for waiting until a gocbcore agent is ready.
+// CouchbaseClusterWaitUntilReadyOptions provides options for waiting until a cluster agent is ready.
 type CouchbaseClusterWaitUntilReadyOptions struct {
-	Timeout       time.Duration
-	RetryStrategy gocbcore.RetryStrategy
+	Timeout time.Duration
 }
 
-// NewClusterAgent creates a gocbcore.Agent for management/test operations against a Couchbase cluster.
-// TODO: Migrate to gocbcorex-based management when test infrastructure is fully migrated.
-func NewClusterAgent(ctx context.Context, clusterSpec CouchbaseClusterSpec, opts CouchbaseClusterWaitUntilReadyOptions) (*gocbcore.Agent, error) {
-	connStr := clusterSpec.Server
-
-	agentConfig := gocbcore.AgentConfig{
-		DefaultRetryStrategy: gocbcore.NewBestEffortRetryStrategy(nil),
-	}
-	connStrError := agentConfig.FromConnStr(connStr)
-	if connStrError != nil {
-		return nil, fmt.Errorf("unable to create cluster agent - error building conn str: %v", connStrError)
-	}
-
-	username := clusterSpec.Username
-	password := clusterSpec.Password
-	auth := &gocbcore.PasswordAuthProvider{
-		Username: username,
-		Password: password,
-	}
-
-	tlsRootCAProvider, err := GoCBCoreTLSRootCAProvider(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
+// NewClusterAgent creates a gocbcorex.Agent for management/test operations against a Couchbase cluster.
+func NewClusterAgent(ctx context.Context, clusterSpec CouchbaseClusterSpec, opts CouchbaseClusterWaitUntilReadyOptions) (*gocbcorex.Agent, error) {
+	auth, err := GocbcorexAuthenticator(clusterSpec.Username, clusterSpec.Password, clusterSpec.X509Certpath, clusterSpec.X509Keypath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to create authenticator: %w", err)
 	}
 
-	agentConfig.SecurityConfig.Auth = auth
-	agentConfig.SecurityConfig.TLSRootCAProvider = tlsRootCAProvider
-	agentConfig.UserAgent = "SyncGatewayTest"
+	connSpec, err := gocbconnstr.Parse(clusterSpec.Server)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse connection string: %w", err)
+	}
 
-	agent, err := gocbcore.CreateAgent(&agentConfig)
+	seedConfig, err := buildSeedConfig(connSpec)
+	if err != nil {
+		return nil, fmt.Errorf("unable to build seed config: %w", err)
+	}
+
+	var tlsConfig *tls.Config
+	tlsConfig, err = GocbcorexTLSConfig(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create TLS config: %w", err)
+	}
+
+	agent, err := gocbcorex.CreateAgent(ctx, gocbcorex.AgentOptions{
+		Authenticator: auth,
+		TLSConfig:     tlsConfig,
+		SeedConfig:    seedConfig,
+		BucketName:    "", // cluster-level agent, no bucket
+		Logger:        GocbcorexLogger(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create cluster agent: %w", err)
-	}
-
-	// Wait for agent to be ready
-	agentReadyErr := make(chan error, 1)
-	_, err = agent.WaitUntilReady(
-		time.Now().Add(opts.Timeout),
-		gocbcore.WaitUntilReadyOptions{},
-		func(_ *gocbcore.WaitUntilReadyResult, err error) {
-			agentReadyErr <- err
-		})
-	if err != nil {
-		_ = agent.Close()
-		return nil, fmt.Errorf("WaitUntilReady for cluster agent returned error: %w", err)
-	}
-	err = <-agentReadyErr
-	if err != nil {
-		_ = agent.Close()
-		return nil, fmt.Errorf("WaitUntilReady error channel for cluster agent returned error: %w", err)
 	}
 
 	return agent, nil

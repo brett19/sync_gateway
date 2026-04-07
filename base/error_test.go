@@ -11,6 +11,7 @@ licenses/APL2.txt.
 package base
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,7 +19,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex/memdx"
 	"github.com/couchbase/gomemcached"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/stretchr/testify/assert"
@@ -39,27 +40,23 @@ func TestErrorAsHTTPStatus(t *testing.T) {
 	assert.Equal(t, http.StatusOK, code)
 	assert.Equal(t, http.StatusText(http.StatusOK), text)
 
-	code, text = ErrorAsHTTPStatus(gocb.ErrDocumentNotFound)
+	code, text = ErrorAsHTTPStatus(memdx.ErrDocNotFound)
 	assert.Equal(t, http.StatusNotFound, code)
 	assert.Equal(t, "missing", text)
 
-	code, text = ErrorAsHTTPStatus(gocb.ErrDocumentExists)
+	code, text = ErrorAsHTTPStatus(memdx.ErrDocExists)
 	assert.Equal(t, http.StatusConflict, code)
 	assert.Equal(t, "Conflict", text)
 
-	code, text = ErrorAsHTTPStatus(gocb.ErrTimeout)
+	code, text = ErrorAsHTTPStatus(context.DeadlineExceeded)
 	assert.Equal(t, http.StatusServiceUnavailable, code)
-	assert.Equal(t, "Database timeout error (gocb.ErrTimeout)", text)
+	assert.Equal(t, "Database timeout error", text)
 
-	code, text = ErrorAsHTTPStatus(gocb.ErrOverload)
+	code, text = ErrorAsHTTPStatus(memdx.ErrTmpFail)
 	assert.Equal(t, http.StatusServiceUnavailable, code)
-	assert.Equal(t, "Database server is over capacity (gocb.ErrOverload)", text)
+	assert.Equal(t, "Database server is over capacity (temporary failure)", text)
 
-	code, text = ErrorAsHTTPStatus(gocb.ErrTemporaryFailure)
-	assert.Equal(t, http.StatusServiceUnavailable, code)
-	assert.Equal(t, "Database server is over capacity (gocb.ErrTemporaryFailure)", text)
-
-	code, text = ErrorAsHTTPStatus(gocb.ErrValueTooLarge)
+	code, text = ErrorAsHTTPStatus(memdx.ErrValueTooLarge)
 	assert.Equal(t, http.StatusRequestEntityTooLarge, code)
 	assert.Equal(t, "Document too large!", text)
 

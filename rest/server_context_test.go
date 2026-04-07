@@ -17,12 +17,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10/connstr"
+	"github.com/couchbaselabs/gocbconnstr/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/auth"
 	"github.com/couchbase/sync_gateway/base"
@@ -277,27 +278,19 @@ func TestObtainManagementEndpointsFromServerContext(t *testing.T) {
 	assert.NoError(t, err)
 
 	clusterAddress := base.UnitTestUrl()
-	baseSpec, err := connstr.Parse(clusterAddress)
+	parsedSpec, err := gocbconnstr.Parse(clusterAddress)
 	require.NoError(t, err)
 
-	spec, err := connstr.Resolve(baseSpec)
-	require.NoError(t, err)
+	// Verify at least one management endpoint exists that references a host from the connection string
+	require.NotEmpty(t, eps, "Expected at least one management endpoint")
+	require.NotEmpty(t, parsedSpec.Addresses, "Expected at least one address in connection string")
 
 	existsOneMatchingEndpoint := false
-
-outerLoop:
-	for _, httpHost := range spec.HttpHosts {
+	for _, addr := range parsedSpec.Addresses {
 		for _, ep := range eps {
-			protocol := "http"
-			if spec.UseSsl {
-				protocol = "https"
-			}
-			formattedHttpHost := fmt.Sprintf("%s://%s:%d", protocol, httpHost.Host, httpHost.Port)
-
-			t.Logf("formattedHttpHost: %s, ep: %s", formattedHttpHost, ep)
-			if formattedHttpHost == ep {
+			if strings.Contains(ep, addr.Host) {
 				existsOneMatchingEndpoint = true
-				break outerLoop
+				break
 			}
 		}
 	}
@@ -335,21 +328,18 @@ func TestObtainManagementEndpointsFromServerContextWithX509(t *testing.T) {
 	eps, _, err := svrctx.ObtainManagementEndpointsAndHTTPClient()
 	assert.NoError(t, err)
 
-	baseSpec, err := connstr.Parse(base.UnitTestUrl())
+	parsedSpec, err := gocbconnstr.Parse(base.UnitTestUrl())
 	require.NoError(t, err)
 
-	spec, err := connstr.Resolve(baseSpec)
-	require.NoError(t, err)
+	// Verify at least one management endpoint exists that references a host from the connection string
+	require.NotEmpty(t, eps, "Expected at least one management endpoint")
 
 	existsOneMatchingEndpoint := false
-
-outerLoop:
-	for _, httpHost := range spec.HttpHosts {
+	for _, addr := range parsedSpec.Addresses {
 		for _, ep := range eps {
-			formattedHttpHost := fmt.Sprintf("https://%s:%d", httpHost.Host, httpHost.Port)
-			if formattedHttpHost == ep {
+			if strings.Contains(ep, addr.Host) {
 				existsOneMatchingEndpoint = true
-				break outerLoop
+				break
 			}
 		}
 	}

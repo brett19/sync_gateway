@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
 	"github.com/stretchr/testify/assert"
@@ -87,8 +86,7 @@ func TestX509UnknownAuthorityWrap(t *testing.T) {
 			TLSSkipVerify: base.ValDefault(sc.Bootstrap.ServerTLSSkipVerify, false),
 		},
 		base.CouchbaseClusterWaitUntilReadyOptions{
-			Timeout:       base.TestClusterReadyTimeout,
-			RetryStrategy: gocbcore.NewBestEffortRetryStrategy(nil),
+			Timeout: base.TestClusterReadyTimeout,
 		},
 	)
 	assert.Error(t, err)

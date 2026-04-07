@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex/memdx"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/google/uuid"
 )
@@ -123,7 +123,7 @@ func (a *AttachmentCompactionManager) Run(ctx context.Context, options map[strin
 
 	defer persistClusterStatus()
 
-	var rollbackErr gocbcore.DCPRollbackError
+	var rollbackErr memdx.DcpRollbackError
 
 	// Need to check the current phase in the event we are resuming - No need to run mark again if we got as far as
 	// cleanup last time...
@@ -183,7 +183,7 @@ func (a *AttachmentCompactionManager) Run(ctx context.Context, options map[strin
 }
 
 func (a *AttachmentCompactionManager) handleAttachmentCompactionRollbackError(ctx context.Context, options map[string]any, dataStore base.DataStore, database *Database, err error, phase attachmentCompactionPhase, keyPrefix string) (bool, error) {
-	var rollbackErr gocbcore.DCPRollbackError
+	var rollbackErr memdx.DcpRollbackError
 	if errors.As(err, &rollbackErr) || errors.Is(err, base.ErrVbUUIDMismatch) {
 		base.InfofCtx(ctx, base.KeyDCP, "rollback indicated on %s phase of attachment compaction, resetting the task", phase)
 		// to rollback any phase for attachment compaction we need to purge all persisted dcp metadata
