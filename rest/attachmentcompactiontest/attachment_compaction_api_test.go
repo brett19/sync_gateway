@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
 	"github.com/couchbase/sync_gateway/rest"
@@ -382,7 +381,7 @@ func TestAttachmentCompactionMarkPhaseRollback(t *testing.T) {
 	if base.UnitTestUrlIsWalrus() {
 		t.Skip("This test only works against Couchbase Server")
 	}
-	var garbageVBUUID gocbcore.VbUUID = 1234
+	var garbageVBUUID uint64 = 1234
 
 	rt := rest.NewRestTesterDefaultCollection(t, nil)
 	defer rt.Close()

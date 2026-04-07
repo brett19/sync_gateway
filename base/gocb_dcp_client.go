@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
-	"github.com/couchbase/gocbcore/v10/memd"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/memdx"
 	sgbucket "github.com/couchbase/sg-bucket"
 )
 
@@ -43,11 +43,11 @@ var ErrVbUUIDMismatch = errors.New("VbUUID mismatch when failOnRollback set")
 type GoCBDCPClient struct {
 	ctx                        context.Context
 	dcpStreamName              string                         // DCP stream name, must be unique
-	agent                      *gocbcore.DCPAgent             // SDK DCP agent, manages connections and calls back to DCPClient stream observer implementation
+	streamSet                  *gocbcorex.DcpStreamSet         // gocbcorex DCP stream set, manages DCP connections and stream operations
+	bucket                     *GocbV2Bucket                   // Bucket reference for accessing gocbcorex agent
 	callback                   sgbucket.FeedEventCallbackFunc // Callback invoked on DCP mutations/deletions
 	workers                    []*DCPWorker                   // Workers for concurrent processing of incoming mutations and callback.  vbuckets are partitioned across workers
 	workersWg                  sync.WaitGroup                 // Active workers WG - used for signaling when the DCPClient workers have all stopped so the doneChannel can be closed
-	spec                       BucketSpec                     // Bucket spec for the target data store
 	supportsCollections        bool                           // Whether the target data store supports collections
 	numVbuckets                uint16                         // number of vbuckets on target data store
 	terminator                 chan bool                      // Used to close worker goroutines spawned by the DCPClient
@@ -63,8 +63,8 @@ type GoCBDCPClient struct {
 	checkpointPrefix           string                         // DCP checkpoint key prefix
 	checkpointPersistFrequency *time.Duration                 // Used to override the default checkpoint persistence frequency
 	dbStats                    *expvar.Map                    // Stats for database
-	agentPriority              gocbcore.DcpAgentPriority      // agentPriority specifies the priority level for a dcp stream
-	collectionIDs              []uint32                       // collectionIDs used by gocbcore, if empty, uses default collections
+	agentPriority              string                         // agentPriority specifies the priority level for a dcp stream
+	collectionIDs              []uint32                       // collectionIDs used by gocbcorex, if empty, uses default collections
 	feedContent                sgbucket.FeedContent           // feedContent specifies whether the DCP feed should include values, xattrs, or both
 }
 
@@ -72,34 +72,31 @@ type DCPClientOptions struct {
 	FeedID                     string // Optional description for a DCP feed
 	NumWorkers                 int
 	OneShot                    bool
-	FailOnRollback             bool                      // When true, the DCP client will terminate on DCP rollback
-	InitialMetadata            []DCPMetadata             // When set, will be used as initial metadata for the DCP feed.  Will override any persisted metadata
-	CheckpointPersistFrequency *time.Duration            // Overrides metadata persistence frequency - intended for test use
-	MetadataStoreType          DCPMetadataStoreType      // define storage type for DCPMetadata
-	DbStats                    *expvar.Map               // Optional stats
-	AgentPriority              gocbcore.DcpAgentPriority // agentPriority specifies the priority level for a dcp stream
-	CollectionIDs              []uint32                  // CollectionIDs used by gocbcore, if empty, uses default collections
+	FailOnRollback             bool                 // When true, the DCP client will terminate on DCP rollback
+	InitialMetadata            []DCPMetadata        // When set, will be used as initial metadata for the DCP feed.  Will override any persisted metadata
+	CheckpointPersistFrequency *time.Duration       // Overrides metadata persistence frequency - intended for test use
+	MetadataStoreType          DCPMetadataStoreType // define storage type for DCPMetadata
+	DbStats                    *expvar.Map          // Optional stats
+	AgentPriority              string               // agentPriority specifies the priority level for a dcp stream (e.g. "medium")
+	CollectionIDs              []uint32             // CollectionIDs used by gocbcorex, if empty, uses default collections
 	CheckpointPrefix           string
 	FeedContent                sgbucket.FeedContent // FeedContent specifies whether the DCP feed should include values, xattrs, or both
 }
 
-// MemdDcpOpenFlag returns the memd.DcpOpenFlag to use for the given FeedContent option.
-func MemdDcpOpenFlag(ctx context.Context, c sgbucket.FeedContent) memd.DcpOpenFlag {
-	// NoValueWithUnderlyingDatatype is a DCP open flag that requests the server to not send
-	// values in DCP events, but still send the underlying datatype for each event.
-	const NoValueWithUnderlyingDatatype = memd.DcpOpenFlag(0x40)
+// dcpOptionsForFeedContent returns the gocbcorex KvClientDcpOptions flags for the given FeedContent option.
+func dcpOptionsForFeedContent(ctx context.Context, c sgbucket.FeedContent) (includeXattrs bool, excludeValues bool) {
 	switch c {
 	case sgbucket.FeedContentDefault:
-		return memd.DcpOpenFlagIncludeXattrs
+		return true, false
 	case sgbucket.FeedContentKeysOnly:
-		return NoValueWithUnderlyingDatatype
+		return false, true
 	case sgbucket.FeedContentBodyOnly:
-		return 0
+		return false, false
 	case sgbucket.FeedContentXattrOnly:
-		return memd.DcpOpenFlagIncludeXattrs | NoValueWithUnderlyingDatatype
+		return true, true
 	default:
 		AssertfCtx(ctx, "invalid FeedContent value: %d", c)
-		return memd.DcpOpenFlagIncludeXattrs
+		return true, false
 	}
 }
 
@@ -119,7 +116,7 @@ func newDCPClientWithForBuckets(ctx context.Context, callback sgbucket.FeedEvent
 	if options.NumWorkers > 0 {
 		numWorkers = options.NumWorkers
 	}
-	if options.AgentPriority == gocbcore.DcpAgentPriorityHigh {
+	if options.AgentPriority == "high" {
 		return nil, fmt.Errorf("sync gateway should not set high priority for DCP feeds")
 	}
 
@@ -138,7 +135,7 @@ func newDCPClientWithForBuckets(ctx context.Context, callback sgbucket.FeedEvent
 		workers:             make([]*DCPWorker, numWorkers),
 		numVbuckets:         numVbuckets,
 		callback:            callback,
-		spec:                bucket.GetSpec(),
+		bucket:              bucket,
 		supportsCollections: bucket.IsSupported(sgbucket.BucketStoreFeatureCollections),
 		terminator:          make(chan bool),
 		doneChannel:         make(chan error, 1),
@@ -180,62 +177,18 @@ func newDCPClientWithForBuckets(ctx context.Context, callback sgbucket.FeedEvent
 	return client, nil
 }
 
-// getCollectionHighSeqNo returns the highSeqNo for a given KV collection ID.
+// getCollectionHighSeqNos returns the highSeqNo for a given KV collection ID.
 func (dc *GoCBDCPClient) getCollectionHighSeqNos(collectionID uint32) ([]uint64, error) {
-	vbucketSeqnoOptions := gocbcore.GetVbucketSeqnoOptions{}
-	if dc.supportsCollections {
-		vbucketSeqnoOptions.FilterOptions = &gocbcore.GetVbucketSeqnoFilterOptions{CollectionID: collectionID}
-	}
-	configSnapshot, err := dc.agent.ConfigSnapshot()
+	_, highSeqNos, err := dc.bucket.GetStatsVbSeqno(dc.numVbuckets, false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get gocbcore connection config: %w", err)
+		return nil, fmt.Errorf("failed to get vbucket seqnos: %w", err)
 	}
 
-	numServers, err := configSnapshot.NumServers()
-	if err != nil {
-		return nil, fmt.Errorf("failed to determine the number of servers in the target cluster: %w", err)
+	result := make([]uint64, dc.numVbuckets)
+	for vbID := uint16(0); vbID < dc.numVbuckets; vbID++ {
+		result[vbID] = highSeqNos[vbID]
 	}
-	highSeqNos := make([]uint64, dc.numVbuckets)
-	// each server is going to return correct values for the active vbuckets on that node,
-	// so loop over all servers and take the max values
-	// serverIdx start at 1 (-1 in gocbcore), 0 refers to the master node
-	for serverIdx := 1; serverIdx <= numServers; serverIdx++ {
-
-		// This has to be buffered so that Cancel() below doesn't lead to blocking in the callback.
-		// (If Cancel succeeds then it will lead to directly calling the callback).
-		highSeqNoError := make(chan error, 1)
-		highSeqNoCallback := func(entries []gocbcore.VbSeqNoEntry, err error) {
-			if err == nil {
-				for _, entry := range entries {
-					if highSeqNos[entry.VbID] < uint64(entry.SeqNo) {
-						highSeqNos[entry.VbID] = uint64(entry.SeqNo)
-					}
-				}
-			}
-			highSeqNoError <- err
-		}
-		op, seqErr := dc.agent.GetVbucketSeqnos(
-			serverIdx,
-			memd.VbucketStateActive, // active vbuckets only
-			vbucketSeqnoOptions,     // contains collectionID
-			highSeqNoCallback)
-
-		if seqErr != nil {
-			return nil, seqErr
-		}
-
-		select {
-		case err := <-highSeqNoError:
-			if err != nil {
-				return nil, err
-			}
-		case <-time.After(getVbSeqnoTimeout):
-			op.Cancel()
-			<-highSeqNoError
-			return nil, ErrTimeout
-		}
-	}
-	return highSeqNos, nil
+	return result, nil
 }
 
 // getHighSeqNos returns the maximum sequence number for every collection configured by the DCP agent.
@@ -244,7 +197,7 @@ func (dc *GoCBDCPClient) getHighSeqNos() ([]uint64, error) {
 	// Initialize highSeqNo to the current metadata's StartSeqNo - we don't want to use a value lower than what
 	// we've already processed
 	for vbNo := uint16(0); vbNo < dc.numVbuckets; vbNo++ {
-		highSeqNos[vbNo] = uint64(dc.metadata.GetMeta(vbNo).StartSeqNo)
+		highSeqNos[vbNo] = dc.metadata.GetMeta(vbNo).StartSeqNo
 	}
 	for _, collectionID := range dc.collectionIDs {
 		colHighSeqNos, err := dc.getCollectionHighSeqNos(collectionID)
@@ -278,7 +231,7 @@ func (dc *GoCBDCPClient) configureOneShot() error {
 
 // Start returns an error and a channel to indicate when the DCPClient is done. If Start returns an error, DCPClient.Close() needs to be called.
 func (dc *GoCBDCPClient) Start() (doneChan chan error, err error) {
-	err = dc.initAgent(dc.spec)
+	err = dc.initStreamSet()
 	if err != nil {
 		return dc.doneChannel, err
 	}
@@ -326,10 +279,10 @@ func (dc *GoCBDCPClient) close() {
 
 	// Stop workers
 	close(dc.terminator)
-	if dc.agent != nil {
-		agentErr := dc.agent.Close()
-		if agentErr != nil {
-			WarnfCtx(dc.ctx, "Error closing DCP agent in client close: %v", agentErr)
+	if dc.streamSet != nil {
+		streamSetErr := dc.streamSet.Close()
+		if streamSetErr != nil {
+			WarnfCtx(dc.ctx, "Error closing DCP stream set in client close: %v", streamSetErr)
 		}
 	}
 
@@ -341,99 +294,147 @@ func (dc *GoCBDCPClient) close() {
 	}()
 }
 
-// getAgentConfig returns a gocbcore.DCPAgentConfig for the given BucketSpec
-// TODO: This entire DCP subsystem needs to be migrated from gocbcore.DCPAgent to gocbcorex DCP.
-// For now, we use PasswordAuthProvider directly with BucketSpec credentials.
-func (dc *GoCBDCPClient) getAgentConfig(spec BucketSpec) (*gocbcore.DCPAgentConfig, error) {
-	connStr, err := spec.GetGoCBConnStringForDCP()
+// initStreamSet creates a gocbcorex DcpStreamSet via the bucket's Agent
+func (dc *GoCBDCPClient) initStreamSet() error {
+	agent := dc.bucket.GetAgent()
+
+	includeXattrs, excludeValues := dcpOptionsForFeedContent(dc.ctx, dc.feedContent)
+
+	dcpOpts := gocbcorex.KvClientDcpOptions{
+		ConnectionName:     dc.dcpStreamName,
+		IncludeXattrs:      includeXattrs,
+		ExcludeValues:      excludeValues,
+		NoopInterval:       120 * time.Second,
+		EnableExpiryEvents: false,
+	}
+
+	if dc.agentPriority != "" {
+		dcpOpts.Priority = dc.agentPriority
+	}
+
+	streamSet, err := agent.NewStreamSet(gocbcorex.NewStreamSetOptions{
+		DcpOpts:  dcpOpts,
+		Handlers: dc.buildDcpEventHandlers(),
+	})
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("Unable to start DCP client - error creating stream set: %w", err)
 	}
 
-	agentConfig := gocbcore.DCPAgentConfig{
-		DefaultRetryStrategy: gocbcore.NewBestEffortRetryStrategy(nil),
-	}
-	DebugfCtx(dc.ctx, KeyAll, "Parsing cluster connection string %q", UD(connStr))
-	beforeFromConnStr := time.Now()
-	connStrError := agentConfig.FromConnStr(connStr)
-	if connStrError != nil {
-		return nil, fmt.Errorf("Unable to start DCP Client - error building conn str: %v", connStrError)
-	}
-	if d := time.Since(beforeFromConnStr); d > FromConnStrWarningThreshold {
-		WarnfCtx(dc.ctx, "Parsed cluster connection string %q in: %v", UD(connStr), d)
-	} else {
-		DebugfCtx(dc.ctx, KeyAll, "Parsed cluster connection string %q in: %v", UD(connStr), d)
-	}
-
-	// TODO: Migrate DCP to use gocbcorex DCP directly instead of gocbcore.
-	// For now, create a gocbcore-compatible auth from the BucketSpec credentials.
-	username, password, _ := spec.Auth.GetCredentials()
-	auth := &gocbcore.PasswordAuthProvider{
-		Username: username,
-		Password: password,
-	}
-
-	tlsRootCAProvider, err := GoCBCoreTLSRootCAProvider(dc.ctx, &spec.TLSSkipVerify, spec.CACertPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Force poolsize to 1, multiple clients results in DCP naming collision
-	agentConfig.BucketName = spec.BucketName
-	agentConfig.DCPConfig.AgentPriority = dc.agentPriority
-	agentConfig.SecurityConfig.Auth = auth
-	agentConfig.SecurityConfig.TLSRootCAProvider = tlsRootCAProvider
-	agentConfig.UserAgent = "SyncGatewayDCP"
-	if dc.supportsCollections {
-		agentConfig.IoConfig.UseCollections = true
-	}
-	return &agentConfig, nil
+	dc.streamSet = streamSet
+	return nil
 }
 
-// initAgent creates a DCP agent and waits for it to be ready
-func (dc *GoCBDCPClient) initAgent(spec BucketSpec) error {
-	agentConfig, err := dc.getAgentConfig(spec)
-	if err != nil {
-		return err
-	}
-	flags := memd.DcpOpenFlagProducer
-	flags |= MemdDcpOpenFlag(dc.ctx, dc.feedContent)
-	var agentErr error
-	dc.agent, agentErr = gocbcore.CreateDcpAgent(agentConfig, dc.dcpStreamName, flags)
-	if agentErr != nil {
-		return fmt.Errorf("Unable to start DCP client - error creating agent: %w", agentErr)
-	}
+// buildDcpEventHandlers creates the gocbcorex.DcpEventsHandlers for the DCP client.
+// This replaces the gocbcore.StreamObserver interface.
+func (dc *GoCBDCPClient) buildDcpEventHandlers() gocbcorex.DcpEventsHandlers {
+	return gocbcorex.DcpEventsHandlers{
+		StreamOpen: func(req *memdx.DcpStreamReqResponse) {
+			// Failover log is handled via the OpenVbucket return value
+		},
+		StreamEnd: func(req *memdx.DcpStreamEndEvent) {
+			e := endStreamEvent{
+				streamEventCommon: streamEventCommon{
+					vbID:     req.VbucketId,
+					streamID: req.StreamId,
+				},
+				flags: req.StreamEndFlags,
+			}
+			dc.workerForVbno(req.VbucketId).Send(dc.ctx, e)
+		},
+		SnapshotMarker: func(req *memdx.DcpSnapshotMarkerEvent) {
+			e := snapshotEvent{
+				streamEventCommon: streamEventCommon{
+					vbID:     req.VbucketId,
+					streamID: req.StreamId,
+				},
+				startSeq:     req.StartSeqNo,
+				endSeq:       req.EndSeqNo,
+				snapshotType: req.SnapshotType,
+			}
+			dc.workerForVbno(req.VbucketId).Send(dc.ctx, e)
+		},
+		Mutation: func(req *memdx.DcpMutationEvent) {
+			if dc.filteredKey(req.Key) {
+				return
+			}
 
-	// Wait for agent to be ready
-	var waitError error
-	for i := range 10 {
-		waitError = nil
-		agentReadyErr := make(chan error)
-		_, err = dc.agent.WaitUntilReady(
-			time.Now().Add(30*time.Second),
-			gocbcore.WaitUntilReadyOptions{},
-			func(_ *gocbcore.WaitUntilReadyResult, err error) {
-				agentReadyErr <- err
+			e := mutationEvent{
+				streamEventCommon: streamEventCommon{
+					vbID:     req.VbucketId,
+					streamID: req.StreamId,
+				},
+				seq:        req.SeqNo,
+				revNo:      req.RevNo,
+				flags:      req.Flags,
+				expiry:     req.Expiry,
+				cas:        req.Cas,
+				datatype:   req.Datatype,
+				collection: req.CollectionId,
+
+				// The byte slices must be copied to ensure that memory associated with the underlying memd mutationEvent and Packet are independent and can be released or reused by gocbcorex as needed.
+				key:   EfficientBytesClone(req.Key),
+				value: EfficientBytesClone(req.Value),
+			}
+			dc.workerForVbno(req.VbucketId).Send(dc.ctx, e)
+		},
+		Deletion: func(req *memdx.DcpDeletionEvent) {
+			if dc.filteredKey(req.Key) {
+				return
+			}
+
+			e := deletionEvent{
+				streamEventCommon: streamEventCommon{
+					vbID:     req.VbucketId,
+					streamID: req.StreamId,
+				},
+				seq:        req.SeqNo,
+				cas:        req.Cas,
+				revNo:      req.RevNo,
+				datatype:   req.Datatype,
+				collection: req.CollectionId,
+
+				// The byte slices must be copied to ensure that memory associated with the underlying memd mutationEvent and Packet are independent and can be released or reused by gocbcorex as needed.
+				key:   EfficientBytesClone(req.Key),
+				value: EfficientBytesClone(req.Key), // Deletions don't carry a value body, but match original behavior
+			}
+			dc.workerForVbno(req.VbucketId).Send(dc.ctx, e)
+		},
+		Expiration: func(req *memdx.DcpExpirationEvent) {
+			// SG doesn't opt in to expirations, so they'll come through as deletion events
+			// (cf.https://github.com/couchbase/kv_engine/blob/master/docs/dcp/documentation/expiry-opcode-output.md)
+			WarnfCtx(dc.ctx, "Unexpected DCP expiration event (vb:%d) for key %v", req.VbucketId, UD(string(req.Key)))
+		},
+		CollectionCreation: func(req *memdx.DcpCollectionCreationEvent) {
+			// Not used by SG at this time
+		},
+		CollectionDeletion: func(req *memdx.DcpCollectionDeletionEvent) {
+			// Not used by SG at this time
+		},
+		CollectionFlush: func(req *memdx.DcpCollectionFlushEvent) {
+			// Not used by SG at this time
+		},
+		ScopeCreation: func(req *memdx.DcpScopeCreationEvent) {
+			// Not used by SG at this time
+		},
+		ScopeDeletion: func(req *memdx.DcpScopeDeletionEvent) {
+			// Not used by SG at this time
+		},
+		CollectionChanged: func(req *memdx.DcpCollectionModificationEvent) {
+			// Not used by SG at this time
+		},
+		OSOSnapshot: func(req *memdx.DcpOSOSnapshotEvent) {
+			// Not used by SG at this time
+		},
+		SeqNoAdvanced: func(req *memdx.DcpSeqNoAdvancedEvent) {
+			dc.workerForVbno(req.VbucketId).Send(dc.ctx, seqnoAdvancedEvent{
+				streamEventCommon: streamEventCommon{
+					vbID:     req.VbucketId,
+					streamID: req.StreamId,
+				},
+				seq: req.SeqNo,
 			})
-		if err != nil {
-			waitError = fmt.Errorf("WaitUntilReady for dcp agent returned error (%d): %w", i, err)
-			continue
-		}
-		err = <-agentReadyErr
-		if err != nil {
-			waitError = fmt.Errorf("WaitUntilReady error channel for dcp agent returned error (%d): %w", i, err)
-			continue
-		}
-		if waitError == nil {
-			break
-		}
-
+		},
 	}
-	if waitError != nil {
-		return waitError
-	}
-
-	return nil
 }
 
 func (dc *GoCBDCPClient) workerForVbno(vbNo uint16) *DCPWorker {
@@ -483,7 +484,7 @@ func (dc *GoCBDCPClient) openStream(vbID uint16, maxRetries uint32) error {
 			return nil
 		}
 
-		var rollbackErr gocbcore.DCPRollbackError
+		var rollbackErr *memdx.DcpRollbackError
 		switch {
 		case errors.As(openStreamErr, &rollbackErr):
 			if dc.failOnRollback {
@@ -492,16 +493,9 @@ func (dc *GoCBDCPClient) openStream(vbID uint16, maxRetries uint32) error {
 			}
 			InfofCtx(dc.ctx, KeyDCP, "Open stream for vbID %d failed due to rollback or range error, will roll back metadata and retry: %v", vbID, openStreamErr)
 
-			dc.rollback(dc.ctx, vbID, rollbackErr.SeqNo)
-		case errors.Is(openStreamErr, gocbcore.ErrMemdRangeError):
-			err := fmt.Errorf("Invalid metadata out of range for vbID %d, err: %v metadata %+v, shutting down agent", vbID, openStreamErr, dc.metadata.GetMeta(vbID))
-			WarnfCtx(dc.ctx, "%s", err)
-			return err
+			dc.rollback(dc.ctx, vbID, rollbackErr.RollbackSeqNo)
 		case errors.Is(openStreamErr, ErrVbUUIDMismatch):
 			WarnfCtx(dc.ctx, "Closing Stream for vbID: %d, %s", vbID, openStreamErr)
-			return openStreamErr
-		case errors.Is(openStreamErr, gocbcore.ErrShutdown):
-			WarnfCtx(dc.ctx, "Closing stream for vbID %d, agent has been shut down", vbID)
 			return openStreamErr
 		case errors.Is(openStreamErr, ErrTimeout):
 			InfofCtx(dc.ctx, KeyDCP, "Timeout attempting to open stream for vb %d, will retry", vbID)
@@ -519,67 +513,57 @@ func (dc *GoCBDCPClient) openStream(vbID uint16, maxRetries uint32) error {
 	return fmt.Errorf("openStream failed to complete after %d attempts, last error: %w", attempts, openStreamErr)
 }
 
-func (dc *GoCBDCPClient) rollback(ctx context.Context, vbID uint16, seqNo gocbcore.SeqNo) {
+func (dc *GoCBDCPClient) rollback(ctx context.Context, vbID uint16, seqNo uint64) {
 	if dc.dbStats != nil {
 		dc.dbStats.Add("dcp_rollback_count", 1)
 	}
 	dc.metadata.Rollback(ctx, vbID, seqNo)
 }
 
-// openStreamRequest issues the OpenStream request, but doesn't perform any error handling.  Callers
-// should generally use openStream() for error and retry handling
+// openStreamRequest issues the OpenVbucket request via the gocbcorex DcpStreamSet
 func (dc *GoCBDCPClient) openStreamRequest(vbID uint16) error {
 
 	vbMeta := dc.metadata.GetMeta(vbID)
 
-	options := gocbcore.OpenStreamOptions{}
+	openOpts := &gocbcorex.OpenVbucketOptions{
+		VbucketId:      vbID,
+		Flags:          0, // DcpStreamAddFlagActiveOnly is implicit in gocbcorex
+		StartSeqNo:     vbMeta.StartSeqNo,
+		EndSeqNo:       vbMeta.EndSeqNo,
+		VbUuid:         vbMeta.VbUUID,
+		SnapStartSeqNo: vbMeta.SnapStartSeqNo,
+		SnapEndSeqNo:   vbMeta.SnapEndSeqNo,
+	}
+
 	// Always use a collection-aware feed if supported
 	if dc.supportsCollections {
-		options.FilterOptions = &gocbcore.OpenStreamFilterOptions{CollectionIDs: dc.collectionIDs}
+		openOpts.CollectionIds = dc.collectionIDs
 	}
 
-	// This has to be buffered so that Cancel() below doesn't lead to blocking in the callback.
-	// (If Cancel succeeds then it will lead to directly calling the callback).
-	openStreamError := make(chan error, 1)
-	openStreamCallback := func(f []gocbcore.FailoverEntry, err error) {
-		if err == nil {
-			err = dc.verifyFailoverLog(vbID, f)
-			if err == nil {
-				dc.metadata.SetFailoverEntries(vbID, f)
-			}
-		}
-		openStreamError <- err
-	}
+	ctx, cancel := context.WithTimeout(dc.ctx, openStreamTimeout)
+	defer cancel()
 
-	op, openErr := dc.agent.OpenStream(vbID,
-		memd.DcpStreamAddFlagActiveOnly,
-		vbMeta.VbUUID,
-		vbMeta.StartSeqNo,
-		vbMeta.EndSeqNo,
-		vbMeta.SnapStartSeqNo,
-		vbMeta.SnapEndSeqNo,
-		dc,
-		options,
-		openStreamCallback)
-
-	if openErr != nil {
-		return openErr
-	}
-
-	select {
-	case err := <-openStreamError:
+	resp, err := dc.streamSet.OpenVbucket(ctx, openOpts)
+	if err != nil {
 		return err
-	case <-time.After(openStreamTimeout):
-		op.Cancel()
-		<-openStreamError
-		return ErrTimeout
 	}
+
+	// Verify the failover log and update metadata
+	if resp != nil {
+		verifyErr := dc.verifyFailoverLog(vbID, resp.FailoverLog)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		dc.metadata.SetFailoverEntries(vbID, resp.FailoverLog)
+	}
+
+	return nil
 }
 
 // verifyFailoverLog checks for VbUUID changes when failOnRollback is set, and
 // writes the failover log to the client metadata store.  If previous VbUUID is zero, it's
 // not considered a rollback - it's not required to initialize vbUUIDs into meta.
-func (dc *GoCBDCPClient) verifyFailoverLog(vbID uint16, f []gocbcore.FailoverEntry) error {
+func (dc *GoCBDCPClient) verifyFailoverLog(vbID uint16, f []memdx.DcpFailoverEntry) error {
 
 	if dc.failOnRollback {
 		previousMeta := dc.metadata.GetMeta(vbID)
@@ -612,33 +596,29 @@ func (dc *GoCBDCPClient) deactivateVbucket(vbID uint16) {
 }
 
 func (dc *GoCBDCPClient) onStreamEnd(e endStreamEvent) {
-	if e.err == nil {
+	if e.flags == memdx.DcpStreamEndFlagOk {
 		DebugfCtx(dc.ctx, KeyDCP, "Stream (vb:%d) closed, all items streamed", e.vbID)
 		dc.deactivateVbucket(e.vbID)
 		return
 	}
 
-	if errors.Is(e.err, gocbcore.ErrDCPStreamClosed) {
+	if e.flags == memdx.DcpStreamEndFlagClosed {
 		DebugfCtx(dc.ctx, KeyDCP, "Stream (vb:%d) closed by DCPClient", e.vbID)
 		dc.fatalError(fmt.Errorf("Stream (vb:%d) closed by DCPClient", e.vbID))
 		return
 	}
 
-	if errors.Is(e.err, gocbcore.ErrDCPStreamStateChanged) || errors.Is(e.err, gocbcore.ErrDCPStreamTooSlow) || errors.Is(e.err, gocbcore.ErrDCPStreamDisconnected) {
-		DebugfCtx(dc.ctx, KeyDCP, "Stream (vb:%d) ended with a known error, will reconnect. Reason: %s", e.vbID, e.err)
+	if e.flags == memdx.DcpStreamEndFlagStateChanged || e.flags == memdx.DcpStreamEndFlagTooSlow || e.flags == memdx.DcpStreamEndFlagDisconnected {
+		DebugfCtx(dc.ctx, KeyDCP, "Stream (vb:%d) ended with a known flag (%d), will reconnect", e.vbID, e.flags)
 	} else {
-		InfofCtx(dc.ctx, KeyDCP, "Stream (vb:%d) ended with an unknown error, will reconnect. Reason: %s", e.vbID, e.err)
+		InfofCtx(dc.ctx, KeyDCP, "Stream (vb:%d) ended with an unknown flag (%d), will reconnect", e.vbID, e.flags)
 	}
 	retries := infiniteOpenStreamRetries
 	if dc.oneShot {
 		retries = openRetryCount
 	}
 
-	// Re-opening the stream needs to be asynchronous, due to the way the DCPAgent performs locking while
-	// reconfiguring memdclients - the old client can't be closed while it has pending StreamObserver.End calls,
-	// and our openStream request won't succeed until the old client is closed.
-	// Since we've got a relatively small event buffer for processing observer events (10 x 8 workers), a
-	// synchronous openStream request will create a deadlock whenever more than 80 vbuckets need to be closed.
+	// Re-opening the stream needs to be asynchronous to avoid deadlocks
 	go func(vb uint16, maxRetries uint32) {
 		err := dc.openStream(vb, maxRetries)
 		if err != nil {
@@ -674,22 +654,22 @@ func (dc *GoCBDCPClient) getCloseError() error {
 
 // getVbUUID returns the VbUUID for the given sequence in the failover log. (the most
 // recent failover log entry where log.SeqNo is less than the given sequence)
-func getVbUUID(failoverLog []gocbcore.FailoverEntry, seq gocbcore.SeqNo) (vbUUID gocbcore.VbUUID) {
+func getVbUUID(failoverLog []memdx.DcpFailoverEntry, seq uint64) (vbUUID uint64) {
 	for i := len(failoverLog) - 1; i >= 0; i-- {
 		if failoverLog[i].SeqNo <= seq {
-			return failoverLog[i].VbUUID
+			return failoverLog[i].VbUuid
 		}
 	}
 	return 0
 }
 
 // getLatestVbUUID returns the VbUUID associated with the highest sequence in the failover log
-func getLatestVbUUID(failoverLog []gocbcore.FailoverEntry) (vbUUID gocbcore.VbUUID) {
+func getLatestVbUUID(failoverLog []memdx.DcpFailoverEntry) (vbUUID uint64) {
 	if len(failoverLog) == 0 {
 		return 0
 	}
 	entry := failoverLog[len(failoverLog)-1]
-	return entry.VbUUID
+	return entry.VbUuid
 }
 
 func (dc *GoCBDCPClient) GetMetadataKeyPrefix() string {
@@ -706,4 +686,26 @@ func NewDCPClientForTest(ctx context.Context, t *testing.T, callback sgbucket.Fe
 	return newDCPClientWithForBuckets(ctx, callback, options, bucket, numVbuckets)
 }
 
-var _ gocbcore.StreamObserver = &GoCBDCPClient{}
+func (dc *GoCBDCPClient) filteredKey(key []byte) bool {
+	return false
+}
+
+// SendMutationForTest creates a mutationEvent and sends it directly to the appropriate worker.
+// This is used by performance testing tools that generate synthetic DCP events.
+func (dc *GoCBDCPClient) SendMutationForTest(vbID uint16, seq uint64, key []byte, value []byte, cas uint64, datatype uint8) {
+	e := mutationEvent{
+		streamEventCommon: streamEventCommon{
+			vbID:     vbID,
+			streamID: vbID,
+		},
+		seq:      seq,
+		revNo:    1,
+		flags:    0,
+		expiry:   0,
+		cas:      cas,
+		datatype: datatype,
+		key:      key,
+		value:    value,
+	}
+	dc.workerForVbno(vbID).Send(dc.ctx, e)
+}

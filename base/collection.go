@@ -230,13 +230,52 @@ func (b *GocbV2Bucket) StartDCPFeed(ctx context.Context, args sgbucket.FeedArgum
 }
 
 func (b *GocbV2Bucket) GetStatsVbSeqno(maxVbno uint16, useAbsHighSeqNo bool) (uuids map[uint16]uint64, highSeqnos map[uint16]uint64, seqErr error) {
-	// TODO: Implement using gocbcorex agent stats API
-	return nil, nil, fmt.Errorf("GetStatsVbSeqno not yet implemented for gocbcorex")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	uuids = make(map[uint16]uint64, maxVbno)
+	highSeqnos = make(map[uint16]uint64, maxVbno)
+
+	seqnoKey := "vb_%d:high_seqno"
+	if useAbsHighSeqNo {
+		seqnoKey = "vb_%d:abs_high_seqno"
+	}
+
+	for vbID := uint16(0); vbID < maxVbno; vbID++ {
+		vb := vbID // capture for closure
+		_, err := b.agent.StatsByVbucket(ctx, &gocbcorex.StatsByVbucketOptions{
+			GroupName: "vbucket-seqno",
+			VbucketID: vb,
+		}, func(result gocbcorex.StatsDataResult) {
+			expectedSeqKey := fmt.Sprintf(seqnoKey, vb)
+			expectedUUIDKey := fmt.Sprintf("vb_%d:uuid", vb)
+
+			if result.Key == expectedSeqKey {
+				seqNo, parseErr := strconv.ParseUint(result.Value, 10, 64)
+				if parseErr == nil {
+					highSeqnos[vb] = seqNo
+				}
+			} else if result.Key == expectedUUIDKey {
+				uuid, parseErr := strconv.ParseUint(result.Value, 10, 64)
+				if parseErr == nil {
+					uuids[vb] = uuid
+				}
+			}
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get stats for vbucket %d: %w", vb, err)
+		}
+	}
+
+	return uuids, highSeqnos, nil
 }
 
 func (b *GocbV2Bucket) GetMaxVbno() (uint16, error) {
-	// TODO: Implement using gocbcorex management API or DCP config
-	return 1024, nil
+	numVbs := b.agent.NumVbuckets()
+	if numVbs == 0 {
+		return 0, fmt.Errorf("unable to determine number of vbuckets from agent")
+	}
+	return uint16(numVbs), nil
 }
 
 // GetCCVSettings returns the highest CAS value across all vBuckets for a bucket with CCV enabled.

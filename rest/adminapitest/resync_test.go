@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/couchbase/gocbcore/v10"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
 	"github.com/couchbase/sync_gateway/rest"
@@ -59,7 +58,7 @@ func TestResyncRollback(t *testing.T) {
 	checkpointPrefix := db.GetResyncDCPCheckpointPrefix(rt.GetDatabase(), status.ResyncID, false)
 	meta := base.NewDCPMetadataCS(rt.Context(), rt.Bucket().DefaultDataStore(), 1024, 8, checkpointPrefix)
 	vbMeta := meta.GetMeta(0)
-	var garbageVBUUID gocbcore.VbUUID = 1234
+	var garbageVBUUID uint64 = 1234
 	vbMeta.VbUUID = garbageVBUUID
 	meta.SetMeta(0, vbMeta)
 	meta.Persist(rt.Context(), 0, []uint16{0})

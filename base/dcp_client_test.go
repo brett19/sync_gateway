@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
 	sgbucket "github.com/couchbase/sg-bucket"
 
 	"github.com/stretchr/testify/assert"
@@ -185,9 +184,9 @@ func TestDCPClientMultiFeedConsistency(t *testing.T) {
 		t.Skip("This test only works against Couchbase Server")
 	}
 	testCases := []struct {
-		startSeqNo gocbcore.SeqNo
+		startSeqNo uint64
 		vbNo       uint16
-		vbUUID     gocbcore.VbUUID
+		vbUUID     uint64
 	}{
 		{
 			startSeqNo: 2,
@@ -326,7 +325,7 @@ func TestContinuousDCPRollback(t *testing.T) {
 		t.Skip("This test requires DCP feed from gocb and therefore Couchbase Sever")
 	}
 
-	var vbUUID gocbcore.VbUUID = 1234
+	var vbUUID uint64 = 1234
 	c := make(chan bool)
 
 	ctx := TestCtx(t)
@@ -424,7 +423,7 @@ func TestContinuousDCPRollback(t *testing.T) {
 
 // forceRollbackvBucket forces the rollback of vBucket IDs that are even
 // Test helper function. This should not be used elsewhere.
-func (dc *GoCBDCPClient) forceRollbackvBucket(uuid gocbcore.VbUUID) {
+func (dc *GoCBDCPClient) forceRollbackvBucket(uuid uint64) {
 	metadata := make([]DCPMetadata, dc.numVbuckets)
 	for i := uint16(0); i < dc.numVbuckets; i++ {
 		// rollback roughly half the vBuckets
@@ -565,7 +564,7 @@ func TestBadAgentPriority(t *testing.T) {
 		return false
 	}
 	dcpClientOpts := DCPClientOptions{
-		AgentPriority: gocbcore.DcpAgentPriorityHigh,
+		AgentPriority: "high",
 	}
 
 	gocbv2Bucket, err := AsGocbV2Bucket(bucket.Bucket)
@@ -930,61 +929,5 @@ func TestDCPFeedContentBodyOnlyDocs(t *testing.T) {
 	}
 }
 
-func TestDCPClientAgentConfig(t *testing.T) {
-	if UnitTestUrlIsWalrus() {
-		t.Skip("exercises gocbcore code")
-	}
-	ctx := TestCtx(t)
-	bucket := GetTestBucket(t)
-	defer bucket.Close(ctx)
-	gocbv2Bucket, err := AsGocbV2Bucket(bucket.Bucket)
-	require.NoError(t, err)
-
-	testCases := []struct {
-		name         string
-		serverSuffix string
-		networkType  string
-	}{
-		{
-			name:         "implicit",
-			serverSuffix: "",
-			networkType:  "",
-		},
-		{
-			name:         "network=default",
-			serverSuffix: "?network=default",
-			networkType:  "default",
-		},
-		{
-			name:         "network=external",
-			serverSuffix: "?network=external",
-			networkType:  "external",
-		},
-		{
-			name:         "network=auto",
-			serverSuffix: "?network=auto",
-			networkType:  "auto",
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.NotContains(t, gocbv2Bucket.Spec.Server, "?", "expected no query parameters for connection string to start")
-			oldBucketSpecServer := gocbv2Bucket.Spec.Server
-			defer func() { gocbv2Bucket.Spec.Server = oldBucketSpecServer }()
-			gocbv2Bucket.Spec.Server += tc.serverSuffix
-			dcpClient, err := NewDCPClient(ctx,
-				func(sgbucket.FeedEvent) bool { return true },
-				DCPClientOptions{MetadataStoreType: DCPMetadataStoreInMemory},
-				gocbv2Bucket)
-			require.NoError(t, err)
-			defer func() {
-				assert.NoError(t, dcpClient.Close())
-			}()
-
-			config, err := dcpClient.getAgentConfig(gocbv2Bucket.GetSpec())
-			require.NoError(t, err)
-
-			require.Equal(t, tc.networkType, config.IoConfig.NetworkType)
-		})
-	}
-}
+// TestDCPClientAgentConfig was removed as part of gocbcorex migration -
+// agent config is no longer created directly by the DCP client (uses bucket's Agent instead).

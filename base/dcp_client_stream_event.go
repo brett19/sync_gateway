@@ -11,7 +11,7 @@ package base
 import (
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex/memdx"
 	sgbucket "github.com/couchbase/sg-bucket"
 )
 
@@ -35,7 +35,7 @@ func (sec streamEventCommon) VbID() uint16 {
 type snapshotEvent struct {
 	startSeq     uint64
 	endSeq       uint64
-	snapshotType gocbcore.SnapshotState
+	snapshotType memdx.DcpSnapshotState
 	streamEventCommon
 }
 
@@ -97,9 +97,9 @@ func (e deletionEvent) asFeedEvent() sgbucket.FeedEvent {
 	}
 }
 
-// endStreamEvent represents a DCP end stream event, and the error associated with the stream end (opcode 0x55).
+// endStreamEvent represents a DCP end stream event, and the flags associated with the stream end (opcode 0x55).
 type endStreamEvent struct {
-	err error
+	flags memdx.DcpStreamEndFlags
 	streamEventCommon
 }
 

@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex/memdx"
 	sgbucket "github.com/couchbase/sg-bucket"
 )
 
@@ -32,16 +32,16 @@ func getHighSeqMetadata(cbstore CouchbaseBucketStore) ([]DCPMetadata, error) {
 
 	metadata := make([]DCPMetadata, numVbuckets)
 	for vbNo := range numVbuckets {
-		highSeqNo := gocbcore.SeqNo(highSeqNos[vbNo])
-		metadata[vbNo].VbUUID = gocbcore.VbUUID(vbUUIDs[vbNo])
-		metadata[vbNo].FailoverEntries = []gocbcore.FailoverEntry{
+		highSeqNo := highSeqNos[vbNo]
+		metadata[vbNo].VbUUID = vbUUIDs[vbNo]
+		metadata[vbNo].FailoverEntries = []memdx.DcpFailoverEntry{
 			{
-				VbUUID: gocbcore.VbUUID(vbUUIDs[vbNo]),
+				VbUuid: vbUUIDs[vbNo],
 				SeqNo:  highSeqNo,
 			},
 		}
 		metadata[vbNo].StartSeqNo = highSeqNo
-		metadata[vbNo].EndSeqNo = gocbcore.SeqNo(uint64(0xFFFFFFFFFFFFFFFF))
+		metadata[vbNo].EndSeqNo = uint64(0xFFFFFFFFFFFFFFFF)
 		metadata[vbNo].SnapStartSeqNo = highSeqNo
 		metadata[vbNo].SnapEndSeqNo = highSeqNo
 	}
@@ -104,7 +104,7 @@ func StartGocbDCPFeed(ctx context.Context, bucket *GocbV2Bucket, bucketName stri
 		MetadataStoreType: metadataStoreType,
 		DbStats:           dbStats,
 		CollectionIDs:     collectionIDs,
-		AgentPriority:     gocbcore.DcpAgentPriorityMed,
+		AgentPriority:     "medium",
 		CheckpointPrefix:  args.CheckpointPrefix,
 		FeedID:            args.ID,
 		FeedContent:       args.FeedContent,

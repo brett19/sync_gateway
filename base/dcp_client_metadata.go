@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex/memdx"
 )
 
 type DCPMetadataStoreType int
@@ -26,17 +26,17 @@ const (
 )
 
 type DCPMetadata struct {
-	VbUUID          gocbcore.VbUUID
-	StartSeqNo      gocbcore.SeqNo
-	EndSeqNo        gocbcore.SeqNo
-	SnapStartSeqNo  gocbcore.SeqNo
-	SnapEndSeqNo    gocbcore.SeqNo
-	FailoverEntries []gocbcore.FailoverEntry
+	VbUUID          uint64
+	StartSeqNo      uint64
+	EndSeqNo        uint64
+	SnapStartSeqNo  uint64
+	SnapEndSeqNo    uint64
+	FailoverEntries []memdx.DcpFailoverEntry
 }
 
 type DCPMetadataStore interface {
 	// Rollback resets vBucket metadata to the vBucket UUID and sequence number provided
-	Rollback(ctx context.Context, vbID uint16, startSeqNo gocbcore.SeqNo)
+	Rollback(ctx context.Context, vbID uint16, startSeqNo uint64)
 
 	// SetMeta updates the DCPMetadata for a vbucket
 	SetMeta(vbID uint16, meta DCPMetadata)
@@ -54,7 +54,7 @@ type DCPMetadataStore interface {
 	UpdateSeq(vbID uint16, seq uint64)
 
 	// SetFailoverEntries sets the failover history (vbuUUID, seq) for a vbucket
-	SetFailoverEntries(vbID uint16, entries []gocbcore.FailoverEntry)
+	SetFailoverEntries(vbID uint16, entries []memdx.DcpFailoverEntry)
 
 	// Persist writes the metadata for the specified workerID and vbucket IDs to the backing store
 	Persist(ctx context.Context, workerID int, vbIDs []uint16)
@@ -89,7 +89,7 @@ func NewDCPMetadataMem(numVbuckets uint16) *DCPMetadataMem {
 	}
 	for vbNo := range numVbuckets {
 		m.metadata[vbNo] = DCPMetadata{
-			FailoverEntries: make([]gocbcore.FailoverEntry, 0),
+			FailoverEntries: make([]memdx.DcpFailoverEntry, 0),
 			EndSeqNo:        math.MaxUint64,
 		}
 	}
@@ -97,11 +97,11 @@ func NewDCPMetadataMem(numVbuckets uint16) *DCPMetadataMem {
 }
 
 // Rollback resets vBucket metadata to the vBucket UUID and sequence number provided
-func (m *dcpMetadataBase) Rollback(ctx context.Context, vbID uint16, startSeqNo gocbcore.SeqNo) {
-	var rollbackVbuuid gocbcore.VbUUID
+func (m *dcpMetadataBase) Rollback(ctx context.Context, vbID uint16, startSeqNo uint64) {
+	var rollbackVbuuid uint64
 	for _, failoverLog := range m.metadata[vbID].FailoverEntries {
 		if failoverLog.SeqNo <= startSeqNo {
-			rollbackVbuuid = failoverLog.VbUUID
+			rollbackVbuuid = failoverLog.VbUuid
 			break
 		}
 	}
@@ -123,15 +123,15 @@ func (m *dcpMetadataBase) GetMeta(vbID uint16) DCPMetadata {
 }
 
 func (m *dcpMetadataBase) SetSnapshot(e snapshotEvent) {
-	m.metadata[e.vbID].SnapStartSeqNo = gocbcore.SeqNo(e.startSeq)
-	m.metadata[e.vbID].SnapEndSeqNo = gocbcore.SeqNo(e.endSeq)
+	m.metadata[e.vbID].SnapStartSeqNo = e.startSeq
+	m.metadata[e.vbID].SnapEndSeqNo = e.endSeq
 }
 
 func (m *dcpMetadataBase) UpdateSeq(vbID uint16, seq uint64) {
-	m.metadata[vbID].StartSeqNo = gocbcore.SeqNo(seq)
+	m.metadata[vbID].StartSeqNo = seq
 }
 
-func (m *dcpMetadataBase) SetFailoverEntries(vbID uint16, fe []gocbcore.FailoverEntry) {
+func (m *dcpMetadataBase) SetFailoverEntries(vbID uint16, fe []memdx.DcpFailoverEntry) {
 	m.metadata[vbID].FailoverEntries = fe
 	m.metadata[vbID].VbUUID = getVbUUID(fe, m.metadata[vbID].StartSeqNo)
 }
@@ -141,7 +141,7 @@ func (m *dcpMetadataBase) SetFailoverEntries(vbID uint16, fe []gocbcore.Failover
 func (m *dcpMetadataBase) SetEndSeqNos(endSeqNos map[uint16]uint64) {
 	for i := 0; i < len(m.metadata); i++ {
 		endSeqNo, _ := endSeqNos[uint16(i)]
-		m.metadata[i].EndSeqNo = gocbcore.SeqNo(endSeqNo)
+		m.metadata[i].EndSeqNo = endSeqNo
 	}
 }
 
@@ -171,7 +171,7 @@ func (md *DCPMetadata) Reset() {
 func GetVBUUIDs(metadata []DCPMetadata) []uint64 {
 	uuids := make([]uint64, 0, len(metadata))
 	for _, meta := range metadata {
-		uuids = append(uuids, uint64(meta.VbUUID))
+		uuids = append(uuids, meta.VbUUID)
 	}
 	return uuids
 }
@@ -180,7 +180,7 @@ func BuildDCPMetadataSliceFromVBUUIDs(vbUUIDS []uint64) []DCPMetadata {
 	metadata := make([]DCPMetadata, 0, len(vbUUIDS))
 	for _, vbUUID := range vbUUIDS {
 		metadata = append(metadata, DCPMetadata{
-			VbUUID: gocbcore.VbUUID(vbUUID),
+			VbUUID: vbUUID,
 		})
 	}
 	return metadata
@@ -205,7 +205,7 @@ func NewDCPMetadataCS(ctx context.Context, store DataStore, numVbuckets uint16, 
 	}
 	for vbNo := range numVbuckets {
 		m.metadata[vbNo] = DCPMetadata{
-			FailoverEntries: make([]gocbcore.FailoverEntry, 0),
+			FailoverEntries: make([]memdx.DcpFailoverEntry, 0),
 			EndSeqNo:        math.MaxUint64,
 		}
 	}

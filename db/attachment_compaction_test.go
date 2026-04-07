@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/stretchr/testify/assert"
@@ -255,7 +254,7 @@ func TestAttachmentCleanupRollback(t *testing.T) {
 	testDb, ctx := SetupTestDBWithOptions(t, dbcOptions)
 	defer testDb.Close(ctx)
 
-	var garbageVBUUID gocbcore.VbUUID = 1234
+	var garbageVBUUID uint64 = 1234
 	collection := GetSingleDatabaseCollection(t, testDb.DatabaseContext)
 	dataStore := collection.dataStore
 	collectionID := collection.GetCollectionID()

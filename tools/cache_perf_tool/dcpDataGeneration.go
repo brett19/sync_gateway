@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocbcore/v10"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/channels"
@@ -79,17 +78,7 @@ func (dcp *dcpDataGen) vBucketGoroutine(ctx context.Context, vbNo uint16, delay 
 				return
 			default:
 				vbSeq++
-				dcpMutation := gocbcore.DcpMutation{
-					VbID:     vbNo,
-					SeqNo:    vbSeq,
-					StreamID: vbNo,
-					Flags:    0,
-					RevNo:    1,
-					Expiry:   0,
-					Cas:      casVal,
-					Datatype: 5,
-					Key:      []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10)),
-				}
+				key := []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10))
 
 				if sgwSeqno == 0 {
 					newArr, chanCount, err = dcp.mutateWithDedupe(seqList, chanCount, casVal)
@@ -100,8 +89,7 @@ func (dcp *dcpDataGen) vBucketGoroutine(ctx context.Context, vbNo uint16, delay 
 					log.Printf("Error setting sequence: %v", err)
 					return
 				}
-				dcpMutation.Value = newArr
-				dcp.client.Mutation(dcpMutation)
+				dcp.client.SendMutationForTest(vbNo, vbSeq, key, newArr, casVal, 5)
 			}
 		}
 	}
@@ -123,17 +111,7 @@ func (dcp *dcpDataGen) vBucketGoroutine(ctx context.Context, vbNo uint16, delay 
 			return
 		case <-ticker.C:
 			vbSeq++
-			dcpMutation := gocbcore.DcpMutation{
-				VbID:     vbNo,
-				SeqNo:    vbSeq,
-				StreamID: vbNo,
-				Flags:    0,
-				RevNo:    1,
-				Expiry:   0,
-				Cas:      casVal,
-				Datatype: 5,
-				Key:      []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10)),
-			}
+			key := []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10))
 
 			if sgwSeqno == 0 {
 				newArr, chanCount, err = dcp.mutateWithDedupe(seqList, chanCount, casVal)
@@ -144,8 +122,7 @@ func (dcp *dcpDataGen) vBucketGoroutine(ctx context.Context, vbNo uint16, delay 
 				log.Printf("Error setting sequence: %v", err)
 				return
 			}
-			dcpMutation.Value = newArr
-			dcp.client.Mutation(dcpMutation)
+			dcp.client.SendMutationForTest(vbNo, vbSeq, key, newArr, casVal, 5)
 		}
 	}
 }
@@ -169,19 +146,7 @@ func (dcp *dcpDataGen) syncSeqVBucketCreation(ctx context.Context, vbNo uint16, 
 			case _ = <-dcp.seqAlloc.syncSeqEvent:
 				// channel has cap of 1 so sort of simulates dedupe on kv side
 				vbSeq++
-				dcpMutation := gocbcore.DcpMutation{
-					VbID:     vbNo,
-					SeqNo:    vbSeq,
-					StreamID: vbNo,
-					Flags:    0,
-					RevNo:    1,
-					Expiry:   0,
-					Cas:      uint64(hlc.Now()),
-					Datatype: 5,
-					Key:      []byte("_sync:seq"),
-					Value:    sgbucket.EncodeValueWithXattrs([]byte{50}),
-				}
-				dcp.client.Mutation(dcpMutation)
+				dcp.client.SendMutationForTest(vbNo, vbSeq, []byte("_sync:seq"), sgbucket.EncodeValueWithXattrs([]byte{50}), uint64(hlc.Now()), 5)
 			}
 		}
 	}()
@@ -196,25 +161,14 @@ func (dcp *dcpDataGen) syncSeqVBucketCreation(ctx context.Context, vbNo uint16, 
 			return
 		case <-ticker.C:
 			vbSeq++
-			dcpMutation := gocbcore.DcpMutation{
-				VbID:     vbNo,
-				SeqNo:    vbSeq,
-				StreamID: vbNo,
-				Flags:    0,
-				RevNo:    1,
-				Expiry:   0,
-				Cas:      casVal,
-				Datatype: 5,
-				Key:      []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10)),
-			}
+			key := []byte("key-" + strconv.FormatUint(vbSeq, 10) + "-" + strconv.FormatUint(sgwSeqno, 10))
 
 			newArr, chanCount, err = dcp.mutateSyncData(sgwSeqno, chanCount, casVal)
 			if err != nil {
 				log.Printf("Error setting sequence: %v", err)
 				return
 			}
-			dcpMutation.Value = newArr
-			dcp.client.Mutation(dcpMutation)
+			dcp.client.SendMutationForTest(vbNo, vbSeq, key, newArr, casVal, 5)
 		}
 	}
 }
@@ -332,7 +286,7 @@ func createDCPClient(t *testing.T, ctx context.Context, bucket *base.GocbV2Bucke
 		MetadataStoreType: base.DCPMetadataStoreInMemory,
 		DbStats:           dbStats,
 		CollectionIDs:     []uint32{0},
-		AgentPriority:     gocbcore.DcpAgentPriorityMed,
+		AgentPriority:     "medium",
 		CheckpointPrefix:  "",
 		NumWorkers:        numWorkers,
 	}
