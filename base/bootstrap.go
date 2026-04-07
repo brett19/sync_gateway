@@ -219,7 +219,10 @@ func (cc *CouchbaseCluster) createAgent(ctx context.Context, bucketName string) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to parse connection string for agent creation: %w", err)
 	}
-	seedConfig := buildSeedConfig(connSpec)
+	seedConfig, err := buildSeedConfig(connSpec)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	agent, err := gocbcorex.CreateAgent(ctx, gocbcorex.AgentOptions{
 		Logger:        GocbcorexLogger(),

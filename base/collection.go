@@ -60,7 +60,10 @@ func GetGoCBv2Bucket(ctx context.Context, spec BucketSpec) (*GocbV2Bucket, error
 		}
 	}
 
-	seedConfig := buildSeedConfig(connSpec)
+	seedConfig, err := buildSeedConfig(connSpec)
+	if err != nil {
+		return nil, err
+	}
 
 	agentOpts := gocbcorex.AgentOptions{
 		Logger:        GocbcorexLogger(),
@@ -119,40 +122,26 @@ func GetGoCBv2Bucket(ctx context.Context, spec BucketSpec) (*GocbV2Bucket, error
 }
 
 // buildSeedConfig converts a parsed connection spec into a gocbcorex SeedConfig.
-func buildSeedConfig(connSpec gocbconnstr.ConnSpec) gocbcorex.SeedConfig {
-	var memdAddrs []string
-	var httpAddrs []string
+func buildSeedConfig(connSpec gocbconnstr.ConnSpec) (gocbcorex.SeedConfig, error) {
+	resolved, err := gocbconnstr.Resolve(connSpec)
+	if err != nil {
+		return gocbcorex.SeedConfig{}, fmt.Errorf("unable to resolve connection string: %w", err)
+	}
 
-	for _, host := range connSpec.Addresses {
-		addr := host.Host
-		if host.Port > 0 {
-			addr = fmt.Sprintf("%s:%d", host.Host, host.Port)
-		}
-		// For memd-based schemes, add to memd addrs
-		// For http-based schemes, add to http addrs
-		// ConnSpec normalizes the scheme, so we check the scheme type
-		switch connSpec.Scheme {
-		case "couchbase", "couchbases":
-			if host.Port == 0 {
-				if connSpec.Scheme == "couchbases" {
-					addr = fmt.Sprintf("%s:%d", host.Host, gocbconnstr.DefaultSslMemdPort)
-				} else {
-					addr = fmt.Sprintf("%s:%d", host.Host, gocbconnstr.DefaultMemdPort)
-				}
-			}
-			memdAddrs = append(memdAddrs, addr)
-		default:
-			if host.Port == 0 {
-				addr = fmt.Sprintf("%s:%d", host.Host, gocbconnstr.DefaultHttpPort)
-			}
-			httpAddrs = append(httpAddrs, addr)
-		}
+	var httpAddrs []string
+	for _, host := range resolved.HttpHosts {
+		httpAddrs = append(httpAddrs, fmt.Sprintf("%s:%d", host.Host, host.Port))
+	}
+
+	var memdAddrs []string
+	for _, host := range resolved.MemdHosts {
+		memdAddrs = append(memdAddrs, fmt.Sprintf("%s:%d", host.Host, host.Port))
 	}
 
 	return gocbcorex.SeedConfig{
-		MemdAddrs: memdAddrs,
 		HTTPAddrs: httpAddrs,
-	}
+		MemdAddrs: memdAddrs,
+	}, nil
 }
 
 type GocbV2Bucket struct {
