@@ -12,6 +12,7 @@ package base
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -19,7 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/cbqueryx"
 	sgbucket "github.com/couchbase/sg-bucket"
 	pkgerrors "github.com/pkg/errors"
 )
@@ -101,27 +103,59 @@ func ExplainQuery(ctx context.Context, store N1QLStore, statement string, params
 }
 
 type indexManager struct {
-	cluster        *gocb.QueryIndexManager
-	collection     *gocb.CollectionQueryIndexManager
+	agent          *gocbcorex.Agent
 	bucketName     string
 	scopeName      string
 	collectionName string
 }
 
-func (im *indexManager) GetAllIndexes() ([]gocb.QueryIndex, error) {
-	opts := &gocb.GetAllQueryIndexesOptions{
-		RetryStrategy: &goCBv2FailFastRetryStrategy{},
+func (im *indexManager) GetAllIndexes() ([]cbqueryx.Index, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := im.agent.Query(ctx, &gocbcorex.QueryOptions{
+		Statement: im.buildGetAllIndexesQuery(),
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	if im.collection != nil {
-		return im.collection.GetAllIndexes(opts)
+	var indexes []cbqueryx.Index
+	for result.HasMoreRows() {
+		rowBytes, readErr := result.ReadRow()
+		if readErr != nil {
+			return nil, readErr
+		}
+		var idx cbqueryx.Index
+		if unmarshalErr := json.Unmarshal(rowBytes, &idx); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+		indexes = append(indexes, idx)
 	}
-	// ScopeName and CollectionName options are deprecated (and skipped for staticcheck) as of gocb v2.7.0
-	// (GOCBC-1391). When these run on more than a single collection (CBG-3026) this should be replaced with
-	// a N1QL query rather than a gocb call.
-	opts.ScopeName = im.scopeName           // nolint:staticcheck
-	opts.CollectionName = im.collectionName // nolint:staticcheck
-	return im.cluster.GetAllIndexes(im.bucketName, opts)
+
+	return indexes, nil
+}
+
+func (im *indexManager) buildGetAllIndexesQuery() string {
+	where := ""
+	if im.scopeName == "" && im.collectionName == "" {
+		where = fmt.Sprintf("(keyspace_id='%s' AND bucket_id IS MISSING) OR bucket_id='%s'", im.bucketName, im.bucketName)
+	} else {
+		scopeName := im.scopeName
+		if scopeName == "" {
+			scopeName = "_default"
+		}
+		collectionName := im.collectionName
+		if collectionName == "" {
+			collectionName = "_default"
+		}
+		where = fmt.Sprintf("bucket_id='%s' AND scope_id='%s' AND keyspace_id='%s'", im.bucketName, scopeName, collectionName)
+		if scopeName == "_default" && collectionName == "_default" {
+			where = fmt.Sprintf("(%s) OR (keyspace_id='%s' AND bucket_id IS MISSING)", where, im.bucketName)
+		}
+	}
+	where = fmt.Sprintf("(%s) AND `using`=\"gsi\"", where)
+	return fmt.Sprintf("SELECT `idx`.* FROM system:indexes AS idx WHERE %s ORDER BY is_primary DESC, name ASC", where)
 }
 
 // CreateIndex issues a CREATE INDEX query in the N1QLStore keyspace, using the form:
@@ -488,72 +522,65 @@ func StringSliceToN1QLArray(values []string, quote string) string {
 	return asString
 }
 
-// gocbResultRaw wraps a raw gocb result (both view and n1ql) to implement
-// the sgbucket.QueryResultIterator interface
-type gocbResultRaw interface {
 
-	// NextBytes returns the next row as bytes.
-	NextBytes() []byte
-
-	// Err returns any errors that have occurred on the stream
-	Err() error
-
-	// Close marks the results as closed, returning any errors that occurred during reading the results.
-	Close() error
-
-	// MetaData returns any meta-data that was available from this query as bytes.
-	MetaData() ([]byte, error)
-}
-
-// GoCBQueryIterator wraps a gocb v2 ViewResultRaw to implement sgbucket.QueryResultIterator
-type gocbRawIterator struct {
-	rawResult                  gocbResultRaw
+// gocbcorexQueryIterator wraps a gocbcorex QueryResultStream to implement sgbucket.QueryResultIterator
+type gocbcorexQueryIterator struct {
+	stream                     gocbcorex.QueryResultStream
 	concurrentQueryOpLimitChan chan struct{}
 }
 
 // Unmarshal a single result row into valuePtr, and then close the iterator
-func (i *gocbRawIterator) One(ctx context.Context, valuePtr any) error {
+func (i *gocbcorexQueryIterator) One(ctx context.Context, valuePtr any) error {
 	if !i.Next(ctx, valuePtr) {
-		err := i.Close()
-		if err != nil {
-			return nil
-		}
-		return gocb.ErrNoResult
+		_ = i.Close()
+		return fmt.Errorf("no result")
 	}
 
 	// Ignore any errors occurring after we already have our result
-	//  - follows approach used by gocb v1 One() implementation
 	_ = i.Close()
 	return nil
 }
 
 // Unmarshal the next result row into valuePtr.  Returns false when reaching end of result set
-func (i *gocbRawIterator) Next(ctx context.Context, valuePtr any) bool {
+func (i *gocbcorexQueryIterator) Next(ctx context.Context, valuePtr any) bool {
+	if !i.stream.HasMoreRows() {
+		return false
+	}
 
-	nextBytes := i.rawResult.NextBytes()
+	nextBytes, readErr := i.stream.ReadRow()
+	if readErr != nil {
+		WarnfCtx(ctx, "Error reading query result row: %v", readErr)
+		return false
+	}
 	if nextBytes == nil {
 		return false
 	}
 
 	err := JSONUnmarshal(nextBytes, &valuePtr)
 	if err != nil {
-		WarnfCtx(ctx, "Unable to marshal view result row into value: %v", err)
+		WarnfCtx(ctx, "Unable to marshal query result row into value: %v", err)
 		return false
 	}
 	return true
 }
 
 // Retrieve raw bytes for the next result row
-func (i *gocbRawIterator) NextBytes() []byte {
-	return i.rawResult.NextBytes()
+func (i *gocbcorexQueryIterator) NextBytes() []byte {
+	if !i.stream.HasMoreRows() {
+		return nil
+	}
+	rowBytes, err := i.stream.ReadRow()
+	if err != nil {
+		return nil
+	}
+	return rowBytes
 }
 
 // Closes the iterator.  Returns any row-level errors seen during iteration.
-func (i *gocbRawIterator) Close() error {
-	// Have to iterate over any remaining results to clear the reader
-	// Otherwise we get "the result must be closed before accessing the meta-data" on close details on CBG-1666
-	for i.rawResult.NextBytes() != nil {
-		// noop to drain results
+func (i *gocbcorexQueryIterator) Close() error {
+	// Drain remaining rows
+	for i.stream.HasMoreRows() {
+		_, _ = i.stream.ReadRow()
 	}
 
 	defer func() {
@@ -562,13 +589,7 @@ func (i *gocbRawIterator) Close() error {
 		}
 	}()
 
-	// check for errors before closing?
-	closeErr := i.rawResult.Close()
-	if closeErr != nil {
-		return closeErr
-	}
-	resultErr := i.rawResult.Err()
-	return resultErr
+	return nil
 }
 
 func IndexMetaKeyspaceID(bucketName, scopeName, collectionName string) string {
@@ -606,7 +627,7 @@ func WaitForIndexesOnline(ctx context.Context, keyspace string, mgr *indexManage
 		for i := range currIndexes {
 			name := currIndexes[i].Name
 			// use slices.Contains since the number of indexes is expected to be small
-			if currIndexes[i].State == IndexStateOnline && slices.Contains(indexNames, name) {
+			if string(currIndexes[i].State) == IndexStateOnline && slices.Contains(indexNames, name) {
 				if !onlineIndexes[name] {
 					InfofCtx(ctx, KeyAll, "Index %s is online", MD(name))
 					onlineIndexes[name] = true

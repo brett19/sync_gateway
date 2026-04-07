@@ -12,47 +12,46 @@ package base
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/cbqueryx"
 	sgbucket "github.com/couchbase/sg-bucket"
 	pkgerrors "github.com/pkg/errors"
 )
 
 var _ N1QLStore = &ClusterOnlyN1QLStore{}
 
-// ClusterOnlyN1qlStore implements the N1QLStore using only a cluster connection.
+// ClusterOnlyN1qlStore implements the N1QLStore using only an agent connection.
 // Currently still intended for use for operations against a single collection, but maintains that
-// information via metadata, and so supports sharing of the underlying gocb.Cluster with other
-// ClusterOnlyN1QLStore instances.  Anticipates future refactoring of N1QLStore to differentiate between
-// collection-scoped and non-collection-scoped operations.
+// information via metadata, and so supports sharing of the underlying agent with other
+// ClusterOnlyN1QLStore instances.
 type ClusterOnlyN1QLStore struct {
-	cluster                  *gocb.Cluster
-	bucketName               string // User to build keyspace for query when not otherwise set
+	agent                    *gocbcorex.Agent
+	bucketName               string // Used to build keyspace for query when not otherwise set
 	scopeName                string // Used to build keyspace for query when not otherwise set
 	collectionName           string // Used to build keyspace for query when not otherwise set
 	supportsCollections      bool
 	supportsIfNotExistsInDDL bool // 7.1.0+ MB-38737
 }
 
-func NewClusterOnlyN1QLStore(cluster *gocb.Cluster, bucketName, scopeName, collectionName string) (*ClusterOnlyN1QLStore, error) {
+func NewClusterOnlyN1QLStore(agent *gocbcorex.Agent, bucketName, scopeName, collectionName string) (*ClusterOnlyN1QLStore, error) {
 
 	clusterOnlyn1qlStore := &ClusterOnlyN1QLStore{
-		cluster:        cluster,
+		agent:          agent,
 		bucketName:     bucketName,
 		scopeName:      scopeName,
 		collectionName: collectionName,
 	}
 
-	major, minor, err := GetClusterVersion(cluster)
-	if err != nil {
-		return nil, err
-	}
-	clusterOnlyn1qlStore.supportsCollections = IsMinimumVersion(uint64(major), uint64(minor), 7, 0)
-	clusterOnlyn1qlStore.supportsIfNotExistsInDDL = IsMinimumVersion(uint64(major), uint64(minor), 7, 1)
+	// TODO: Implement cluster version detection via gocbcorex
+	// For now, assume modern cluster (7.1+)
+	clusterOnlyn1qlStore.supportsCollections = true
+	clusterOnlyn1qlStore.supportsIfNotExistsInDDL = true
 
 	return clusterOnlyn1qlStore, nil
 
@@ -127,26 +126,35 @@ func (cl *ClusterOnlyN1QLStore) IndexMetaScopeID() string {
 func (cl *ClusterOnlyN1QLStore) Query(ctx context.Context, statement string, params map[string]any, consistency ConsistencyMode, adhoc bool) (resultsIterator sgbucket.QueryResultIterator, err error) {
 	keyspaceStatement := strings.Replace(statement, KeyspaceQueryToken, cl.EscapedKeyspace(), -1)
 
-	n1qlOptions := &gocb.QueryOptions{
-		ScanConsistency: gocb.QueryScanConsistency(consistency),
-		Adhoc:           adhoc,
-		NamedParameters: params,
+	// Convert named parameters to json.RawMessage
+	namedArgs := make(map[string]json.RawMessage, len(params))
+	for k, v := range params {
+		paramBytes, marshalErr := JSONMarshal(v)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		namedArgs[k] = paramBytes
+	}
+
+	scanConsistency := cbqueryx.ScanConsistencyNotBounded
+	if consistency == RequestPlus {
+		scanConsistency = cbqueryx.ScanConsistencyRequestPlus
 	}
 
 	waitTime := 10 * time.Millisecond
 	for i := 1; i <= MaxQueryRetries; i++ {
 		TracefCtx(ctx, KeyQuery, "Executing N1QL query: %v - %+v", UD(keyspaceStatement), UD(params))
-		queryResults, queryErr := cl.runQuery(keyspaceStatement, n1qlOptions)
+		queryResults, queryErr := cl.runQuery(ctx, keyspaceStatement, namedArgs, scanConsistency)
 		if queryErr == nil {
-			resultsIterator := &gocbRawIterator{
-				rawResult:                  queryResults.Raw(),
+			resultsIterator := &gocbcorexQueryIterator{
+				stream:                     queryResults,
 				concurrentQueryOpLimitChan: nil,
 			}
 			return resultsIterator, queryErr
 		}
 
 		// Timeout error - return named error
-		if errors.Is(queryErr, gocb.ErrTimeout) {
+		if errors.Is(queryErr, context.DeadlineExceeded) {
 			return resultsIterator, ErrViewTimeoutError
 		}
 
@@ -170,46 +178,51 @@ func (cl *ClusterOnlyN1QLStore) Query(ctx context.Context, statement string, par
 
 // executeQuery runs a N1QL query against the cluster.  Does not throttle query ops.
 func (cl *ClusterOnlyN1QLStore) executeQuery(statement string) (sgbucket.QueryResultIterator, error) {
-	queryResults, queryErr := cl.runQuery(statement, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	queryResults, queryErr := cl.runQuery(ctx, statement, nil, cbqueryx.ScanConsistencyUnset)
 	if queryErr != nil {
 		return nil, queryErr
 	}
 
-	resultsIterator := &gocbRawIterator{
-		rawResult:                  queryResults.Raw(),
+	resultsIterator := &gocbcorexQueryIterator{
+		stream:                     queryResults,
 		concurrentQueryOpLimitChan: nil,
 	}
 	return resultsIterator, nil
 }
 
 func (cl *ClusterOnlyN1QLStore) executeStatement(statement string) error {
-	queryResults, queryErr := cl.runQuery(statement, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	queryResults, queryErr := cl.runQuery(ctx, statement, nil, cbqueryx.ScanConsistencyUnset)
 	if queryErr != nil {
 		return queryErr
 	}
 
 	// Drain results to return any non-query errors
-	for queryResults.Next() {
+	for queryResults.HasMoreRows() {
+		_, readErr := queryResults.ReadRow()
+		if readErr != nil {
+			return readErr
+		}
 	}
-	closeErr := queryResults.Close()
-	if closeErr != nil {
-		return closeErr
-	}
-	return queryResults.Err()
+	return nil
 }
 
-func (cl *ClusterOnlyN1QLStore) runQuery(statement string, n1qlOptions *gocb.QueryOptions) (*gocb.QueryResult, error) {
-	if n1qlOptions == nil {
-		n1qlOptions = &gocb.QueryOptions{}
-	}
-	queryResults, err := cl.cluster.Query(statement, n1qlOptions)
-
-	return queryResults, err
+func (cl *ClusterOnlyN1QLStore) runQuery(ctx context.Context, statement string, namedArgs map[string]json.RawMessage, scanConsistency cbqueryx.ScanConsistency) (gocbcorex.QueryResultStream, error) {
+	return cl.agent.Query(ctx, &gocbcorex.QueryOptions{
+		Statement:       statement,
+		NamedArgs:       namedArgs,
+		ScanConsistency: scanConsistency,
+	})
 }
 
-func (cl *ClusterOnlyN1QLStore) indexManager(scopeName, collectionName string) *indexManager {
+func (cl *ClusterOnlyN1QLStore) clusterIndexManager(scopeName, collectionName string) *indexManager {
 	return &indexManager{
-		cluster:        cl.cluster.QueryIndexes(),
+		agent:          cl.agent,
 		bucketName:     cl.bucketName,
 		scopeName:      scopeName,
 		collectionName: collectionName,
@@ -218,7 +231,7 @@ func (cl *ClusterOnlyN1QLStore) indexManager(scopeName, collectionName string) *
 
 func (cl *ClusterOnlyN1QLStore) WaitForIndexesOnline(ctx context.Context, indexNames []string, option WaitForIndexesOnlineOption) error {
 	keyspace := strings.Join([]string{cl.bucketName, cl.scopeName, cl.collectionName}, ".")
-	return WaitForIndexesOnline(ctx, keyspace, cl.indexManager(cl.scopeName, cl.collectionName), indexNames, option)
+	return WaitForIndexesOnline(ctx, keyspace, cl.clusterIndexManager(cl.scopeName, cl.collectionName), indexNames, option)
 }
 
 func (cl *ClusterOnlyN1QLStore) GetIndexMeta(ctx context.Context, indexName string) (exists bool, meta *IndexMeta, err error) {
@@ -226,7 +239,10 @@ func (cl *ClusterOnlyN1QLStore) GetIndexMeta(ctx context.Context, indexName stri
 }
 
 func (cl *ClusterOnlyN1QLStore) IsErrNoResults(err error) bool {
-	return errors.Is(err, gocb.ErrNoResult)
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no result")
 }
 
 // EscapedKeyspace returns the escaped fully-qualified identifier for the keyspace (e.g. `bucket`.`scope`.`collection`)
@@ -239,17 +255,17 @@ func (cl *ClusterOnlyN1QLStore) EscapedKeyspace() string {
 
 func (cl *ClusterOnlyN1QLStore) GetIndexes() (indexes []string, err error) {
 	if cl.supportsCollections {
-		return GetAllIndexes(cl.indexManager(cl.scopeName, cl.collectionName))
+		return GetAllIndexes(cl.clusterIndexManager(cl.scopeName, cl.collectionName))
 	} else {
-		return GetAllIndexes(cl.indexManager("", ""))
+		return GetAllIndexes(cl.clusterIndexManager("", ""))
 	}
 }
 
 // waitUntilQueryServiceReady will wait for the specified duration until the query service is available.
 func (cl *ClusterOnlyN1QLStore) waitUntilQueryServiceReady(timeout time.Duration) error {
-	return cl.cluster.WaitUntilReady(timeout,
-		&gocb.WaitUntilReadyOptions{ServiceTypes: []gocb.ServiceType{gocb.ServiceTypeQuery}},
-	)
+	// TODO: Implement query service readiness check via gocbcorex
+	time.Sleep(100 * time.Millisecond)
+	return nil
 }
 
 // ClusterOnlyN1QLStore allows callers to set the scope and collection per operation

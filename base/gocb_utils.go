@@ -12,129 +12,66 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/gocbcore/v10"
+	"github.com/couchbase/gocbcorex"
 )
 
-// GoCBv2SecurityConfig returns a gocb.SecurityConfig to use when connecting given a CA Cert path.
-func GoCBv2SecurityConfig(ctx context.Context, tlsSkipVerify *bool, caCertPath string) (sc gocb.SecurityConfig, err error) {
-	var certPool *x509.CertPool = nil
-	if tlsSkipVerify == nil || !*tlsSkipVerify { // Add certs if ServerTLSSkipVerify is not set
-		certPool, err = getRootCAs(ctx, caCertPath)
-		if err != nil {
-			return sc, err
-		}
-		tlsSkipVerify = Ptr(false)
-	}
-	sc.TLSRootCAs = certPool
-	sc.TLSSkipVerify = *tlsSkipVerify
-	return sc, nil
-}
-
-// GoCBv2Authenticator returns a gocb.Authenticator to use when connecting given a set of credentials.
-func GoCBv2Authenticator(username, password, certPath, keyPath string) (a gocb.Authenticator, err error) {
+// GocbcorexAuthenticator creates a gocbcorex.Authenticator from credentials or certificate paths.
+func GocbcorexAuthenticator(username, password, certPath, keyPath string) (gocbcorex.Authenticator, error) {
 	if certPath != "" && keyPath != "" {
-		cert, certLoadErr := tls.LoadX509KeyPair(certPath, keyPath)
-		if certLoadErr != nil {
-			return nil, certLoadErr
-		}
-		return gocb.CertificateAuthenticator{
-			ClientCertificate: &cert,
-		}, nil
-	}
-
-	return gocb.PasswordAuthenticator{
-		Username: username,
-		Password: password,
-	}, nil
-}
-
-// GoCBv2TimeoutsConfig returns a gocb.TimeoutsConfig to use when connecting.
-func GoCBv2TimeoutsConfig(bucketOpTimeout, viewQueryTimeout *time.Duration) (tc gocb.TimeoutsConfig) {
-
-	opTimeout := DefaultGocbV2OperationTimeout
-	if bucketOpTimeout != nil {
-		opTimeout = *bucketOpTimeout
-	}
-	tc.KVTimeout = opTimeout
-	tc.ManagementTimeout = opTimeout
-	tc.ConnectTimeout = opTimeout
-
-	if viewQueryTimeout != nil {
-		tc.QueryTimeout = *viewQueryTimeout
-		tc.ViewTimeout = *viewQueryTimeout
-	}
-	return tc
-}
-
-// goCBv2FailFastRetryStrategy represents a strategy that will never retry.
-type goCBv2FailFastRetryStrategy struct{}
-
-var _ gocb.RetryStrategy = &goCBv2FailFastRetryStrategy{}
-
-func (rs *goCBv2FailFastRetryStrategy) RetryAfter(req gocb.RetryRequest, reason gocb.RetryReason) gocb.RetryAction {
-	return &gocb.NoRetryRetryAction{}
-}
-
-// GOCBCORE Utilities
-
-// CertificateAuthenticator allows for certificate auth in gocbcore
-type CertificateAuthenticator struct {
-	ClientCertificate *tls.Certificate
-}
-
-func (ca CertificateAuthenticator) SupportsTLS() bool {
-	return true
-}
-func (ca CertificateAuthenticator) SupportsNonTLS() bool {
-	return false
-}
-func (ca CertificateAuthenticator) Certificate(req gocbcore.AuthCertRequest) (*tls.Certificate, error) {
-	return ca.ClientCertificate, nil
-}
-func (ca CertificateAuthenticator) Credentials(req gocbcore.AuthCredsRequest) ([]gocbcore.UserPassPair, error) {
-	return []gocbcore.UserPassPair{{
-		Username: "",
-		Password: "",
-	}}, nil
-}
-
-// GoCBCoreAuthConfig returns a gocbcore.AuthProvider to use when connecting given a set of credentials via a gocbcore agent.
-func GoCBCoreAuthConfig(username, password, certPath, keyPath string) (gocbcore.AuthProvider, error) {
-	if certPath != "" && keyPath != "" {
-		cert, certLoadErr := tls.LoadX509KeyPair(certPath, keyPath)
-		if certLoadErr != nil {
-			return nil, certLoadErr
-		}
-		return CertificateAuthenticator{
-			ClientCertificate: &cert,
-		}, nil
-	}
-
-	return &gocbcore.PasswordAuthProvider{
-		Username: username,
-		Password: password,
-	}, nil
-}
-
-func GoCBCoreTLSRootCAProvider(ctx context.Context, tlsSkipVerify *bool, caCertPath string) (wrapper func() *x509.CertPool, err error) {
-	var certPool *x509.CertPool = nil
-	if tlsSkipVerify == nil || !*tlsSkipVerify { // Add certs if ServerTLSSkipVerify is not set
-		certPool, err = getRootCAs(ctx, caCertPath)
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return nil, err
 		}
+		return &CertAuthenticator{
+			ClientCertificate: &cert,
+			Username:          username,
+			Password:          password,
+		}, nil
 	}
 
-	return func() *x509.CertPool {
-		return certPool
+	return &gocbcorex.PasswordAuthenticator{
+		Username: username,
+		Password: password,
+	}, nil
+}
+
+// CertAuthenticator implements gocbcorex.Authenticator for client certificate authentication.
+type CertAuthenticator struct {
+	ClientCertificate *tls.Certificate
+	Username          string
+	Password          string
+}
+
+func (a *CertAuthenticator) GetClientCertificate(service gocbcorex.ServiceType, hostPort string) (*tls.Certificate, error) {
+	return a.ClientCertificate, nil
+}
+
+func (a *CertAuthenticator) GetCredentials(service gocbcorex.ServiceType, hostPort string) (string, string, error) {
+	return a.Username, a.Password, nil
+}
+
+// GocbcorexTLSConfig builds a *tls.Config from a CA cert path and TLS skip verify flag.
+func GocbcorexTLSConfig(ctx context.Context, tlsSkipVerify *bool, caCertPath string) (*tls.Config, error) {
+	if tlsSkipVerify != nil && *tlsSkipVerify {
+		return &tls.Config{
+			InsecureSkipVerify: true,
+		}, nil
+	}
+
+	certPool, err := getRootCAs(ctx, caCertPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		RootCAs: certPool,
 	}, nil
 }
 
@@ -151,7 +88,7 @@ func getRootCAs(ctx context.Context, caCertPath string) (*x509.CertPool, error) 
 
 		ok := rootCAs.AppendCertsFromPEM(caCert)
 		if !ok {
-			return nil, errors.New("invalid CA cert")
+			return nil, ErrInvalidCACert
 		}
 
 		return rootCAs, nil
@@ -164,6 +101,9 @@ func getRootCAs(ctx context.Context, caCertPath string) (*x509.CertPool, error) 
 	}
 	return rootCAs, nil
 }
+
+// ErrInvalidCACert is returned when the CA cert cannot be parsed.
+var ErrInvalidCACert = &sgError{"invalid CA cert"}
 
 // MgmtRequest makes a request to the http couchbase management api. This function will read the entire contents of
 // the response and return the output bytes, the status code, and an error.
@@ -193,81 +133,75 @@ func MgmtRequest(client *http.Client, mgmtEp, method, uri, contentType, username
 	return respBytes, response.StatusCode, nil
 }
 
-// CouchbaseClusterWaitUntilReadyOptions defines options when calling gocbcore.Agent.WaitUntilReady.
-type CouchbaseClusterWaitUntilReadyOptions struct {
-	RetryStrategy gocbcore.RetryStrategy // Retry strategy to use when waiting for the cluster to be ready
-	Timeout       time.Duration          // Timeout for waiting for the cluster to be ready
+// GoCBCoreTLSRootCAProvider returns a TLS root CA provider function for gocbcore DCP clients.
+// TODO: Remove when DCP is fully migrated to gocbcorex.
+func GoCBCoreTLSRootCAProvider(ctx context.Context, tlsSkipVerify *bool, caCertPath string) (func() *x509.CertPool, error) {
+	certPool, err := getRootCAs(ctx, caCertPath)
+	if err != nil {
+		return nil, err
+	}
+	return func() *x509.CertPool {
+		return certPool
+	}, nil
 }
 
-// NewClusterAgent creates a new gocbcore agent for a couchbase cluster.
-func NewClusterAgent(ctx context.Context, spec CouchbaseClusterSpec, waitUntilReadyOptions CouchbaseClusterWaitUntilReadyOptions) (*gocbcore.Agent, error) {
-	authenticator, err := GoCBCoreAuthConfig(spec.Username, spec.Password, spec.X509Certpath, spec.X509Keypath)
+// CouchbaseClusterWaitUntilReadyOptions provides options for waiting until a gocbcore agent is ready.
+type CouchbaseClusterWaitUntilReadyOptions struct {
+	Timeout       time.Duration
+	RetryStrategy gocbcore.RetryStrategy
+}
+
+// NewClusterAgent creates a gocbcore.Agent for management/test operations against a Couchbase cluster.
+// TODO: Migrate to gocbcorex-based management when test infrastructure is fully migrated.
+func NewClusterAgent(ctx context.Context, clusterSpec CouchbaseClusterSpec, opts CouchbaseClusterWaitUntilReadyOptions) (*gocbcore.Agent, error) {
+	connStr := clusterSpec.Server
+
+	agentConfig := gocbcore.AgentConfig{
+		DefaultRetryStrategy: gocbcore.NewBestEffortRetryStrategy(nil),
+	}
+	connStrError := agentConfig.FromConnStr(connStr)
+	if connStrError != nil {
+		return nil, fmt.Errorf("unable to create cluster agent - error building conn str: %v", connStrError)
+	}
+
+	username := clusterSpec.Username
+	password := clusterSpec.Password
+	auth := &gocbcore.PasswordAuthProvider{
+		Username: username,
+		Password: password,
+	}
+
+	tlsRootCAProvider, err := GoCBCoreTLSRootCAProvider(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
 	if err != nil {
 		return nil, err
 	}
 
-	tlsRootCAProvider, err := GoCBCoreTLSRootCAProvider(ctx, Ptr(spec.TLSSkipVerify), spec.CACertpath)
+	agentConfig.SecurityConfig.Auth = auth
+	agentConfig.SecurityConfig.TLSRootCAProvider = tlsRootCAProvider
+	agentConfig.UserAgent = "SyncGatewayTest"
+
+	agent, err := gocbcore.CreateAgent(&agentConfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to create cluster agent: %w", err)
 	}
 
-	config := gocbcore.AgentConfig{
-		SecurityConfig: gocbcore.SecurityConfig{
-			TLSRootCAProvider: tlsRootCAProvider,
-			Auth:              authenticator,
-		},
-	}
-
-	DebugfCtx(ctx, KeyAll, "Parsing cluster connection string %q", UD(spec.Server))
-	beforeFromConnStr := time.Now()
-	err = config.FromConnStr(spec.Server)
-	if err != nil {
-		return nil, err
-	}
-	if d := time.Since(beforeFromConnStr); d > FromConnStrWarningThreshold {
-		WarnfCtx(ctx, "Parsed cluster connection string %q in: %v", UD(spec.Server), d)
-	} else {
-		DebugfCtx(ctx, KeyAll, "Parsed cluster connection string %q in: %v", UD(spec.Server), d)
-	}
-
-	agent, err := gocbcore.CreateAgent(&config)
-	if err != nil {
-		return nil, fmt.Errorf("gocbcore.CreateAgent failed: %w", err)
-	}
-
-	shouldCloseAgent := true
-	defer func() {
-		if shouldCloseAgent {
-			if err := agent.Close(); err != nil {
-				WarnfCtx(ctx, "unable to close gocb agent: %v", err)
-			}
-		}
-	}()
-
-	agentReadyErr := make(chan error)
+	// Wait for agent to be ready
+	agentReadyErr := make(chan error, 1)
 	_, err = agent.WaitUntilReady(
-		time.Now().Add(waitUntilReadyOptions.Timeout),
-		gocbcore.WaitUntilReadyOptions{
-			ServiceTypes:  []gocbcore.ServiceType{gocbcore.MgmtService},
-			RetryStrategy: waitUntilReadyOptions.RetryStrategy,
-		},
-		func(result *gocbcore.WaitUntilReadyResult, err error) {
+		time.Now().Add(opts.Timeout),
+		gocbcore.WaitUntilReadyOptions{},
+		func(_ *gocbcore.WaitUntilReadyResult, err error) {
 			agentReadyErr <- err
-		},
-	)
-
+		})
 	if err != nil {
-		return nil, fmt.Errorf("gocbcore.Agent.WaitUntilReady failed: %w", err)
+		_ = agent.Close()
+		return nil, fmt.Errorf("WaitUntilReady for cluster agent returned error: %w", err)
+	}
+	err = <-agentReadyErr
+	if err != nil {
+		_ = agent.Close()
+		return nil, fmt.Errorf("WaitUntilReady error channel for cluster agent returned error: %w", err)
 	}
 
-	if err := <-agentReadyErr; err != nil {
-		if _, ok := errors.Unwrap(err).(x509.UnknownAuthorityError); ok {
-			err = fmt.Errorf("%w - Provide a CA cert, or set tls_skip_verify to true in config", err)
-		}
-
-		return nil, fmt.Errorf("cluster agent is not ready after %vs: %w", waitUntilReadyOptions.Timeout.Seconds(), err)
-	}
-
-	shouldCloseAgent = false
 	return agent, nil
 }

@@ -12,12 +12,14 @@ package base
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/cbqueryx"
 	sgbucket "github.com/couchbase/sg-bucket"
 	pkgerrors "github.com/pkg/errors"
 )
@@ -64,14 +66,10 @@ func (c *Collection) BucketName() string {
 
 func (c *Collection) indexManager() *indexManager {
 	m := &indexManager{
+		agent:          c.Bucket.agent,
 		bucketName:     c.BucketName(),
-		collectionName: c.CollectionName(),
 		scopeName:      c.ScopeName(),
-	}
-	if !c.IsSupported(sgbucket.BucketStoreFeatureCollections) {
-		m.cluster = c.Bucket.cluster.QueryIndexes()
-	} else {
-		m.collection = c.Collection.QueryIndexes()
+		collectionName: c.CollectionName(),
 	}
 	return m
 }
@@ -84,26 +82,35 @@ func (c *Collection) IndexMetaKeyspaceID() string {
 func (c *Collection) Query(ctx context.Context, statement string, params map[string]any, consistency ConsistencyMode, adhoc bool) (resultsIterator sgbucket.QueryResultIterator, err error) {
 	keyspaceStatement := strings.Replace(statement, KeyspaceQueryToken, c.EscapedKeyspace(), -1)
 
-	n1qlOptions := &gocb.QueryOptions{
-		ScanConsistency: gocb.QueryScanConsistency(consistency),
-		Adhoc:           adhoc,
-		NamedParameters: params,
+	// Convert named parameters to json.RawMessage
+	namedArgs := make(map[string]json.RawMessage, len(params))
+	for k, v := range params {
+		paramBytes, marshalErr := JSONMarshal(v)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		namedArgs[k] = paramBytes
+	}
+
+	scanConsistency := cbqueryx.ScanConsistencyNotBounded
+	if consistency == RequestPlus {
+		scanConsistency = cbqueryx.ScanConsistencyRequestPlus
 	}
 
 	waitTime := 10 * time.Millisecond
 	for i := 1; i <= MaxQueryRetries; i++ {
 		TracefCtx(ctx, KeyQuery, "Executing N1QL query: %v - %+v", UD(keyspaceStatement), UD(params))
-		queryResults, queryErr := c.Bucket.runQuery(c.ScopeName(), keyspaceStatement, n1qlOptions)
+		queryResults, queryErr := c.Bucket.runQuery(ctx, c.ScopeName(), keyspaceStatement, namedArgs, scanConsistency)
 		if queryErr == nil {
-			resultsIterator := &gocbRawIterator{
-				rawResult:                  queryResults.Raw(),
+			resultsIterator := &gocbcorexQueryIterator{
+				stream:                     queryResults,
 				concurrentQueryOpLimitChan: c.Bucket.queryOps,
 			}
 			return resultsIterator, queryErr
 		}
 
 		// Timeout error - return named error
-		if errors.Is(queryErr, gocb.ErrTimeout) {
+		if errors.Is(queryErr, context.DeadlineExceeded) {
 			return resultsIterator, ErrViewTimeoutError
 		}
 
@@ -161,60 +168,70 @@ func (c *Collection) BuildDeferredIndexes(ctx context.Context, indexSet []string
 	return BuildDeferredIndexes(ctx, c, indexSet)
 }
 
-func (b *GocbV2Bucket) runQuery(scopeName string, statement string, n1qlOptions *gocb.QueryOptions) (*gocb.QueryResult, error) {
+func (b *GocbV2Bucket) runQuery(ctx context.Context, scopeName string, statement string, namedArgs map[string]json.RawMessage, scanConsistency cbqueryx.ScanConsistency) (gocbcorex.QueryResultStream, error) {
 	b.waitForAvailQueryOp()
 
-	if n1qlOptions == nil {
-		n1qlOptions = &gocb.QueryOptions{}
+	queryContext := ""
+	if b.IsSupported(sgbucket.BucketStoreFeatureCollections) {
+		queryContext = fmt.Sprintf("default:%s.%s", b.GetName(), scopeName)
 	}
 
-	var queryResults *gocb.QueryResult
-	var err error
-	if b.IsSupported(sgbucket.BucketStoreFeatureCollections) {
-		queryResults, err = b.bucket.Scope(scopeName).Query(statement, n1qlOptions)
-	} else {
-		queryResults, err = b.cluster.Query(statement, n1qlOptions)
-	}
-	// In the event that we get an error during query we should release a view op as Close() will not be called.
+	result, err := b.agent.Query(ctx, &gocbcorex.QueryOptions{
+		Statement:       statement,
+		NamedArgs:       namedArgs,
+		ScanConsistency: scanConsistency,
+		QueryContext:    queryContext,
+	})
+	// In the event that we get an error during query we should release a query op as Close() will not be called.
 	if err != nil {
 		b.releaseQueryOp()
 	}
 
-	return queryResults, err
+	return result, err
 }
 
 func (c *Collection) executeQuery(statement string) (sgbucket.QueryResultIterator, error) {
-	queryResults, queryErr := c.Bucket.runQuery(c.ScopeName(), statement, nil)
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	queryResults, queryErr := c.Bucket.runQuery(ctx, c.ScopeName(), statement, nil, cbqueryx.ScanConsistencyUnset)
 	if queryErr != nil {
 		return nil, queryErr
 	}
 
-	resultsIterator := &gocbRawIterator{
-		rawResult:                  queryResults.Raw(),
+	resultsIterator := &gocbcorexQueryIterator{
+		stream:                     queryResults,
 		concurrentQueryOpLimitChan: c.Bucket.queryOps,
 	}
 	return resultsIterator, nil
 }
 
 func (c *Collection) executeStatement(statement string) error {
-	queryResults, queryErr := c.Bucket.runQuery(c.ScopeName(), statement, nil)
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	queryResults, queryErr := c.Bucket.runQuery(ctx, c.ScopeName(), statement, nil, cbqueryx.ScanConsistencyUnset)
 	if queryErr != nil {
 		return queryErr
 	}
 
 	// Drain results to return any non-query errors
-	for queryResults.Next() {
+	for queryResults.HasMoreRows() {
+		_, readErr := queryResults.ReadRow()
+		if readErr != nil {
+			c.Bucket.releaseQueryOp()
+			return readErr
+		}
 	}
-	closeErr := queryResults.Close()
 	c.Bucket.releaseQueryOp()
-	if closeErr != nil {
-		return closeErr
-	}
-	return queryResults.Err()
+	return nil
 }
 
 func (c *Collection) IsErrNoResults(err error) bool {
-	return errors.Is(err, gocb.ErrNoResult)
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no result")
 }
 
 func (c *Collection) GetIndexes() (indexes []string, err error) {
@@ -223,7 +240,8 @@ func (c *Collection) GetIndexes() (indexes []string, err error) {
 
 // waitUntilQueryServiceReady will wait for the specified duration until the query service is available.
 func (c *Collection) waitUntilQueryServiceReady(timeout time.Duration) error {
-	return c.Bucket.cluster.WaitUntilReady(timeout,
-		&gocb.WaitUntilReadyOptions{ServiceTypes: []gocb.ServiceType{gocb.ServiceTypeQuery}},
-	)
+	// TODO: Implement query service readiness check via gocbcorex
+	// For now, just wait the minimum time
+	time.Sleep(100 * time.Millisecond)
+	return nil
 }

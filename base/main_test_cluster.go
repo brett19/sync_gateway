@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/gocbcore/v10"
 )
 
@@ -36,7 +35,7 @@ type tbpCluster struct {
 	// agent is a gocbcore agent for the cluster.
 	agent *gocbcore.Agent
 
-	storageBackend gocb.StorageBackend
+	storageBackend string
 }
 
 // newTestCluster returns a cluster based on the driver used by the defaultBucketSpec.
@@ -63,7 +62,7 @@ func newTestCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec) (*tbp
 		agent:          agent,
 		version:        *version,
 		ee:             ee,
-		storageBackend: gocb.StorageBackendCouchstore,
+		storageBackend: "couchstore",
 	}
 
 	cbs8, err := NewComparableBuildVersionFromString("8.0.0")
@@ -73,50 +72,25 @@ func newTestCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec) (*tbp
 	// for GSI, use default storage backend: magma for 8.0+ or couchstore for <8.0
 	// views aren't supported with magma
 	if !TestsDisableGSI() && ee && !version.Less(cbs8) {
-		cluster.storageBackend = gocb.StorageBackendMagma
+		cluster.storageBackend = "magma"
 	}
 	return cluster, nil
 }
 
-// getGocbClusterForTest makes cluster connection. Callers must close. Returns the cluster and the connection string used to connect.
-func getGocbClusterForTest(ctx context.Context, clusterSpec CouchbaseClusterSpec) (*gocb.Cluster, string, error) {
-	connSpec, err := getGoCBConnSpec(clusterSpec.Server, &GoCBConnStringParams{
-		KvPoolSize: DefaultGocbKvPoolSize,
-	})
+// openTestBucket opens a bucket for testing using GetGoCBv2Bucket.
+func (c *tbpCluster) openTestBucket(ctx context.Context, testBucketName tbpBucketName, waitUntilReady time.Duration) (Bucket, error) {
+
+	bucketSpec := getTestBucketSpec(c.clusterSpec, testBucketName)
+
+	bucketFromSpec, err := GetGoCBv2Bucket(ctx, bucketSpec)
 	if err != nil {
-		return nil, "", fmt.Errorf("couldn't parse connection string %q: %w", clusterSpec.Server, err)
+		return nil, err
 	}
 
-	securityConfig, err := GoCBv2SecurityConfig(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
-	if err != nil {
-		return nil, "", fmt.Errorf("couldn't initialize cluster security config: %w", err)
-	}
+	// add whether bucket is mobile XDCR ready to bucket object
+	bucketFromSpec.supportsHLV = true
 
-	authenticatorConfig, authErr := GoCBv2Authenticator(clusterSpec.Username, clusterSpec.Password, clusterSpec.X509Certpath, clusterSpec.X509Keypath)
-	if authErr != nil {
-		return nil, "", fmt.Errorf("couldn't initialize cluster authenticator config: %w", authErr)
-	}
-
-	// use longer timeout than DefaultBucketOpTimeout to avoid timeouts in test harness from using buckets after flush, which takes some time to reinitialize
-	bucketOpTimeout := 30 * time.Second
-	timeoutsConfig := GoCBv2TimeoutsConfig(&bucketOpTimeout, Ptr(DefaultViewTimeout))
-
-	clusterOptions := gocb.ClusterOptions{
-		Authenticator:  authenticatorConfig,
-		SecurityConfig: securityConfig,
-		TimeoutsConfig: timeoutsConfig,
-	}
-
-	connStr := connSpec.String()
-	cluster, err := gocb.Connect(connStr, clusterOptions)
-	if err != nil {
-		return nil, "", fmt.Errorf("couldn't connect to cluster %q: %w", connStr, err)
-	}
-	err = cluster.WaitUntilReady(TestClusterReadyTimeout, nil)
-	if err != nil {
-		FatalfCtx(ctx, "Cluster not ready after %ds: %v", int(TestClusterReadyTimeout.Seconds()), err)
-	}
-	return cluster, connStr, nil
+	return bucketFromSpec, nil
 }
 
 // isServerEnterprise returns true if the connected returns true if the connected couchbase server
@@ -280,26 +254,7 @@ func (c *tbpCluster) removeBucket(name string) error {
 	return nil
 }
 
-// openTestBucket opens the bucket of the given name for the gocb cluster in the given TestBucketPool.
-func (c *tbpCluster) openTestBucket(ctx context.Context, testBucketName tbpBucketName, waitUntilReady time.Duration) (Bucket, error) {
 
-	bucketCluster, connstr, err := getGocbClusterForTest(ctx, c.clusterSpec)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't get gocb cluster for test: %w", err)
-	}
-
-	bucketSpec := getTestBucketSpec(c.clusterSpec, testBucketName)
-
-	bucketFromSpec, err := GetGocbV2BucketFromCluster(ctx, bucketCluster, bucketSpec, connstr, waitUntilReady, false)
-	if err != nil {
-		return nil, err
-	}
-
-	// add whether bucket is mobile XDCR ready to bucket object
-	bucketFromSpec.supportsHLV = true
-
-	return bucketFromSpec, nil
-}
 
 // close shuts down the running gocbcore agent for the cluster.
 func (c *tbpCluster) close() error {

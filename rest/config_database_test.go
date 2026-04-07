@@ -12,11 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/sync_gateway/base"
 	"github.com/couchbase/sync_gateway/db"
 	"github.com/stretchr/testify/assert"
@@ -167,25 +168,41 @@ func TestConfigToBucketPointName(t *testing.T) {
 	dbConfig.Password = base.TestClusterPassword()
 	dbConfig.Scopes = nil
 
-	// create bucket with . in the name
+	// create bucket with . in the name via management API
 	v2Bucket, err := base.AsGocbV2Bucket(rt.TestBucket)
 	require.NoError(t, err)
-	cluster := v2Bucket.GetCluster()
-	settings := gocb.CreateBucketSettings{
-		BucketSettings: gocb.BucketSettings{
-			Name:       testBucketName,
-			RAMQuotaMB: uint64(256),
-			BucketType: gocb.CouchbaseBucketType,
-		},
+
+	mgmtEps, err := v2Bucket.MgmtEps()
+	require.NoError(t, err)
+	require.Greater(t, len(mgmtEps), 0)
+
+	var username, password string
+	if v2Bucket.Spec.Auth != nil {
+		username, password, _ = v2Bucket.Spec.Auth.GetCredentials()
 	}
-	require.NoError(t, v2Bucket.GetCluster().Buckets().CreateBucket(settings, nil))
+	ctx := base.TestCtx(t)
+
+	// Create bucket via REST management API
+	bucketCreateBody := url.Values{
+		"name":       {testBucketName},
+		"ramQuota":   {"256"},
+		"bucketType": {"couchbase"},
+	}
+	_, statusCode, err := base.MgmtRequest(v2Bucket.HttpClient(ctx), mgmtEps[0], http.MethodPost, "/pools/default/buckets", "application/x-www-form-urlencoded", username, password, strings.NewReader(bucketCreateBody.Encode()))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, statusCode)
+
 	// cleanup this bucket
 	defer func() {
-		require.NoError(t, v2Bucket.GetCluster().Buckets().DropBucket(testBucketName, nil))
+		_, _, _ = base.MgmtRequest(v2Bucket.HttpClient(ctx), mgmtEps[0], http.MethodDelete, fmt.Sprintf("/pools/default/buckets/%s", testBucketName), "", username, password, nil)
 	}()
-	// wait till bucket is ready
-	bucket := cluster.Bucket(testBucketName)
-	require.NoError(t, bucket.WaitUntilReady(10*time.Second, nil))
+
+	// wait for bucket to be ready
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, sc, err := base.MgmtRequest(v2Bucket.HttpClient(ctx), mgmtEps[0], http.MethodGet, fmt.Sprintf("/pools/default/buckets/%s", testBucketName), "", username, password, nil)
+		assert.NoError(c, err)
+		assert.Equal(c, http.StatusOK, sc)
+	}, 10*time.Second, 500*time.Millisecond)
 
 	// create db pointing to bucket with . in it
 	RequireStatus(t, rt.CreateDatabase("db1", dbConfig), http.StatusCreated)

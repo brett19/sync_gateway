@@ -10,35 +10,33 @@ package base
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
-	"github.com/couchbase/gocbcore/v10"
-	"github.com/couchbase/gocbcore/v10/memd"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/memdx"
 )
 
 // ConfigPersistence manages the underlying storage of database config documents in the bucket.
 // Implementations support using either document body or xattr for storage
 type ConfigPersistence interface {
-	// Operations for interacting with raw config ([]byte).  gocb.Cas values represent document cas,
-	// cfgCas represent the cas value associated with the last mutation, and may not match document CAS
-	loadRawConfig(ctx context.Context, c *gocb.Collection, key string) ([]byte, gocb.Cas, error)
-	removeRawConfig(c *gocb.Collection, key string, cas gocb.Cas) (gocb.Cas, error)
-	replaceRawConfig(c *gocb.Collection, key string, value []byte, cas gocb.Cas) (casOut gocb.Cas, err error)
+	// Operations for interacting with raw config ([]byte).
+	// cas values represent document cas; cfgCas represent the cas associated with the last mutation
+	loadRawConfig(ctx context.Context, c *Collection, key string) ([]byte, uint64, error)
+	removeRawConfig(c *Collection, key string, cas uint64) (uint64, error)
+	replaceRawConfig(c *Collection, key string, value []byte, cas uint64) (casOut uint64, err error)
 
 	// Operations for interacting with marshalled config. cfgCas represents the cas value
 	// associated with the last config mutation, and may not match document CAS
-	loadConfig(ctx context.Context, c *gocb.Collection, key string, valuePtr any) (cfgCas uint64, err error)
-	insertConfig(c *gocb.Collection, key string, value any) (cfgCas uint64, err error)
+	loadConfig(ctx context.Context, c *Collection, key string, valuePtr any) (cfgCas uint64, err error)
+	insertConfig(c *Collection, key string, value any) (cfgCas uint64, err error)
 
 	// touchConfigRollback sets the specific property to the specified string value via a subdoc operation.
-	// Used to change to the cas value during rollback, to guard against races with slow updates
-	touchConfigRollback(c *gocb.Collection, key string, property string, value string, cas gocb.Cas) (casOut gocb.Cas, err error)
+	// Used to change the cas value during rollback, to guard against races with slow updates
+	touchConfigRollback(c *Collection, key string, property string, value string, cas uint64) (casOut uint64, err error)
 
 	// keyExists checks whether the specified key exists in the collection
-	keyExists(c *gocb.Collection, key string) (found bool, err error)
+	keyExists(c *Collection, key string) (found bool, err error)
 }
 
 var _ ConfigPersistence = &XattrBootstrapPersistence{}
@@ -53,178 +51,288 @@ const cfgXattrKey = "_sync"
 const cfgXattrConfigPath = cfgXattrKey + ".config"
 const cfgXattrBody = `{"cfgVersion": 1}`
 
-func (xbp *XattrBootstrapPersistence) insertConfig(c *gocb.Collection, key string, value any) (cas uint64, err error) {
+func (xbp *XattrBootstrapPersistence) insertConfig(c *Collection, key string, value any) (cas uint64, err error) {
 
-	mutateOps := []gocb.MutateInSpec{
-		gocb.UpsertSpec(cfgXattrConfigPath, value, UpsertSpecXattr),
-		gocb.ReplaceSpec("", json.RawMessage(cfgXattrBody), nil),
+	valueBytes, err := JSONMarshal(value)
+	if err != nil {
+		return 0, err
 	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsInsert,
+
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDictSet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrConfigPath),
+			Value: valueBytes,
+		},
+		{
+			Op:    memdx.MutateInOpTypeSetDoc,
+			Value: []byte(cfgXattrBody),
+		},
 	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
-	if isKVError(mutateErr, memd.StatusKeyExists) {
+
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Flags:          memdx.SubdocDocFlagAddDoc,
+	})
+	if errors.Is(mutateErr, memdx.ErrDocExists) {
 		return 0, ErrAlreadyExists
 	}
 	if mutateErr != nil {
 		return 0, mutateErr
 	}
-	return uint64(result.Cas()), nil
-
+	return result.Cas, nil
 }
 
-func (xbp *XattrBootstrapPersistence) touchConfigRollback(c *gocb.Collection, key, property, value string, cas gocb.Cas) (casOut gocb.Cas, err error) {
+func (xbp *XattrBootstrapPersistence) touchConfigRollback(c *Collection, key, property, value string, cas uint64) (casOut uint64, err error) {
 	xattrProperty := cfgXattrKey + "." + property
-	mutateOps := []gocb.MutateInSpec{
-		gocb.UpsertSpec(xattrProperty, value, UpsertSpecXattr),
+
+	valueBytes, err := JSONMarshal(value)
+	if err != nil {
+		return 0, err
 	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsReplace,
-		Cas:           cas,
+
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDictSet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(xattrProperty),
+			Value: valueBytes,
+		},
 	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
+
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Cas:            cas,
+	})
 	if mutateErr != nil {
 		return 0, mutateErr
 	}
-	return result.Cas(), nil
+	return result.Cas, nil
 }
 
 // loadRawConfig returns the config and document cas.  Does not restore deleted documents,
 // to avoid cas collisions with concurrent updates
-func (xbp *XattrBootstrapPersistence) loadRawConfig(ctx context.Context, c *gocb.Collection, key string) ([]byte, gocb.Cas, error) {
+func (xbp *XattrBootstrapPersistence) loadRawConfig(ctx context.Context, c *Collection, key string) ([]byte, uint64, error) {
+
+	ops := []memdx.LookupInOp{
+		{
+			Op:    memdx.LookupInOpTypeGet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrConfigPath),
+		},
+	}
+
+	opCtx, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
+
+	res, lookupErr := c.agent().LookupIn(opCtx, &gocbcorex.LookupInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            ops,
+		Flags:          memdx.SubdocDocFlagAccessDeleted,
+	})
+	if lookupErr != nil {
+		if errors.Is(lookupErr, memdx.ErrDocNotFound) {
+			DebugfCtx(ctx, KeyCRUD, "No config document found for key=%s", key)
+			return nil, 0, ErrNotFound
+		}
+		return nil, 0, lookupErr
+	}
+
+	if len(res.Ops) > 0 && res.Ops[0].Err != nil {
+		SyncGatewayStats.GlobalStats.ConfigStat.XattrFormatMismatches.Add(1)
+		DebugfCtx(ctx, KeyCRUD, "Found config document but No xattr config found for key=%s, path=%s: %v", key, cfgXattrConfigPath, res.Ops[0].Err)
+		return nil, 0, ErrNotFound
+	}
 
 	var rawValue []byte
-	ops := []gocb.LookupInSpec{
-		gocb.GetSpec(cfgXattrConfigPath, GetSpecXattr),
+	if len(res.Ops) > 0 {
+		rawValue = res.Ops[0].Value
 	}
-	lookupOpts := &gocb.LookupInOptions{
-		Timeout: time.Second * 10,
-	}
-	lookupOpts.Internal.DocFlags = gocb.SubdocDocFlagAccessDeleted
 
-	res, lookupErr := c.LookupIn(key, ops, LookupOptsAccessDeleted)
-	if lookupErr == nil {
-		// config
-		xattrContErr := res.ContentAt(0, &rawValue)
-		if xattrContErr != nil {
-			SyncGatewayStats.GlobalStats.ConfigStat.XattrFormatMismatches.Add(1)
-			DebugfCtx(ctx, KeyCRUD, "Found config document but No xattr config found for key=%s, path=%s: %v", key, cfgXattrConfigPath, xattrContErr)
-			return rawValue, 0, ErrNotFound
-		}
-		return rawValue, res.Cas(), nil
-	} else if errors.Is(lookupErr, gocbcore.ErrDocumentNotFound) {
-		DebugfCtx(ctx, KeyCRUD, "No config document found for key=%s", key)
-		return rawValue, 0, ErrNotFound
-	} else {
-		return rawValue, 0, lookupErr
-	}
+	return rawValue, res.Cas, nil
 }
 
-func (xbp *XattrBootstrapPersistence) removeRawConfig(c *gocb.Collection, key string, cas gocb.Cas) (gocb.Cas, error) {
+func (xbp *XattrBootstrapPersistence) removeRawConfig(c *Collection, key string, cas uint64) (uint64, error) {
 
-	mutateOps := []gocb.MutateInSpec{
-		gocb.RemoveSpec(cfgXattrKey, RemoveSpecXattr),
-		gocb.RemoveSpec("", nil),
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDelete,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrKey),
+		},
+		{
+			Op:   memdx.MutateInOpTypeDelete,
+			Path: []byte(""),
+		},
 	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsReplace,
-		Cas:           cas,
-	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
+
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Cas:            cas,
+	})
 	if mutateErr == nil {
-		return result.Cas(), nil
+		return result.Cas, nil
 	}
 
 	// StatusKeyNotFound returned if document doesn't exist
-	if errors.Is(mutateErr, gocbcore.ErrDocumentNotFound) {
+	if errors.Is(mutateErr, memdx.ErrDocNotFound) {
 		return 0, ErrNotFound
 	}
 
-	// StatusSubDocBadMulti returned if xattr doesn't exist
-	if isKVError(mutateErr, memd.StatusSubDocBadMulti) {
+	// StatusSubDocPathNotFound returned if xattr doesn't exist
+	if errors.Is(mutateErr, memdx.ErrSubDocPathNotFound) {
 		return 0, ErrNotFound
 	}
 	return 0, mutateErr
-
 }
 
-func (xbp *XattrBootstrapPersistence) replaceRawConfig(c *gocb.Collection, key string, value []byte, cas gocb.Cas) (gocb.Cas, error) {
+func (xbp *XattrBootstrapPersistence) replaceRawConfig(c *Collection, key string, value []byte, cas uint64) (uint64, error) {
 
-	mutateOps := []gocb.MutateInSpec{
-		gocb.UpsertSpec(cfgXattrConfigPath, bytesToRawMessage(value), UpsertSpecXattr),
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDictSet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrConfigPath),
+			Value: value,
+		},
 	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsReplace,
-		Cas:           cas,
-	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
+
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Cas:            cas,
+	})
 	if mutateErr != nil {
 		return 0, mutateErr
 	}
-	return result.Cas(), nil
+	return result.Cas, nil
 }
 
-// loadConfig returns the cas associated with the last cfg change (xattr._sync.cas).  If a deleted document body is
+// loadConfig returns the cas associated with the last cfg change.  If a deleted document body is
 // detected, recreates the document to avoid metadata purge
-func (xbp *XattrBootstrapPersistence) loadConfig(ctx context.Context, c *gocb.Collection, key string, valuePtr any) (cas uint64, err error) {
+func (xbp *XattrBootstrapPersistence) loadConfig(ctx context.Context, c *Collection, key string, valuePtr any) (cas uint64, err error) {
 
-	ops := []gocb.LookupInSpec{
-		gocb.GetSpec(cfgXattrConfigPath, GetSpecXattr),
-		gocb.GetSpec("", &gocb.GetSpecOptions{}),
+	ops := []memdx.LookupInOp{
+		{
+			Op:    memdx.LookupInOpTypeGet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrConfigPath),
+		},
+		{
+			Op: memdx.LookupInOpTypeGetDoc,
+		},
 	}
-	lookupOpts := &gocb.LookupInOptions{
-		Timeout: time.Second * 10,
-	}
-	lookupOpts.Internal.DocFlags = gocb.SubdocDocFlagAccessDeleted
 
-	res, lookupErr := c.LookupIn(key, ops, LookupOptsAccessDeleted)
-	if lookupErr == nil {
-		// config
-		xattrContErr := res.ContentAt(0, valuePtr)
-		if xattrContErr != nil {
-			SyncGatewayStats.GlobalStats.ConfigStat.XattrFormatMismatches.Add(1)
-			DebugfCtx(ctx, KeyCRUD, "Found config document but No xattr config found for key=%s, path=%s: %v", key, cfgXattrConfigPath, xattrContErr)
+	opCtx, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
+
+	res, lookupErr := c.agent().LookupIn(opCtx, &gocbcorex.LookupInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            ops,
+		Flags:          memdx.SubdocDocFlagAccessDeleted,
+	})
+	if lookupErr != nil {
+		if errors.Is(lookupErr, memdx.ErrDocNotFound) {
+			DebugfCtx(ctx, KeyCRUD, "No config document found for key=%s", key)
 			return 0, ErrNotFound
 		}
-		casOut := res.Cas()
-
-		// deleted document check - if deleted, restore
-		var body map[string]any
-		bodyErr := res.ContentAt(1, &body)
-		if bodyErr != nil {
-			restoreCas, restoreErr := xbp.restoreDocumentBody(c, key, valuePtr)
-			if restoreErr != nil {
-				WarnfCtx(ctx, "Error attempting to restore unexpected deletion of config: %v", restoreErr)
-			} else {
-				casOut = restoreCas
-			}
-		}
-		return uint64(casOut), nil
-	} else if errors.Is(lookupErr, gocbcore.ErrDocumentNotFound) {
-		DebugfCtx(ctx, KeyCRUD, "No config document found for key=%s", key)
-		return 0, ErrNotFound
-	} else {
 		return 0, lookupErr
 	}
+
+	// Check xattr result
+	if len(res.Ops) > 0 && res.Ops[0].Err != nil {
+		SyncGatewayStats.GlobalStats.ConfigStat.XattrFormatMismatches.Add(1)
+		DebugfCtx(ctx, KeyCRUD, "Found config document but No xattr config found for key=%s, path=%s: %v", key, cfgXattrConfigPath, res.Ops[0].Err)
+		return 0, ErrNotFound
+	}
+
+	// Unmarshal xattr value
+	if len(res.Ops) > 0 && res.Ops[0].Value != nil {
+		if unmarshalErr := JSONUnmarshal(res.Ops[0].Value, valuePtr); unmarshalErr != nil {
+			return 0, unmarshalErr
+		}
+	}
+
+	casOut := res.Cas
+
+	// deleted document check - if body fetch failed (deleted), restore
+	if len(res.Ops) > 1 && res.Ops[1].Err != nil {
+		restoreCas, restoreErr := xbp.restoreDocumentBody(c, key, valuePtr)
+		if restoreErr != nil {
+			WarnfCtx(ctx, "Error attempting to restore unexpected deletion of config: %v", restoreErr)
+		} else {
+			casOut = restoreCas
+		}
+	}
+	return casOut, nil
 }
 
 // Restore a deleted document's body.  Rewrites metadata
-func (xbp *XattrBootstrapPersistence) restoreDocumentBody(c *gocb.Collection, key string, value any) (casOut gocb.Cas, err error) {
-	mutateOps := []gocb.MutateInSpec{
-		gocb.UpsertSpec(cfgXattrConfigPath, value, UpsertSpecXattr),
-		gocb.ReplaceSpec("", json.RawMessage(cfgXattrBody), nil),
+func (xbp *XattrBootstrapPersistence) restoreDocumentBody(c *Collection, key string, value any) (casOut uint64, err error) {
+
+	valueBytes, err := JSONMarshal(value)
+	if err != nil {
+		return 0, err
 	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsInsert,
+
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDictSet,
+			Flags: memdx.SubdocOpFlagXattrPath,
+			Path:  []byte(cfgXattrConfigPath),
+			Value: valueBytes,
+		},
+		{
+			Op:    memdx.MutateInOpTypeSetDoc,
+			Value: []byte(cfgXattrBody),
+		},
 	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
-	if isKVError(mutateErr, memd.StatusKeyExists) {
+
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
+
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Flags:          memdx.SubdocDocFlagAddDoc,
+	})
+	if errors.Is(mutateErr, memdx.ErrDocExists) {
 		return 0, ErrAlreadyExists
 	}
 	if mutateErr != nil {
 		return 0, mutateErr
 	}
-	return result.Cas(), nil
+	return result.Cas, nil
 }
 
 // Document Body persistence stores config in the document body.
@@ -233,86 +341,102 @@ type DocumentBootstrapPersistence struct {
 	CommonBootstrapPersistence
 }
 
-func (dbp *DocumentBootstrapPersistence) loadRawConfig(_ context.Context, c *gocb.Collection, key string) ([]byte, gocb.Cas, error) {
-	res, err := c.Get(key, &gocb.GetOptions{
-		Transcoder: gocb.NewRawJSONTranscoder(),
-	})
+func (dbp *DocumentBootstrapPersistence) loadRawConfig(_ context.Context, c *Collection, key string) ([]byte, uint64, error) {
+	rv, cas, err := c.GetRaw(key)
 	if err != nil {
+		if errors.Is(err, memdx.ErrDocNotFound) {
+			return nil, 0, ErrNotFound
+		}
 		return nil, 0, err
 	}
 
-	var bucketValue []byte
-	err = res.Content(&bucketValue)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return bucketValue, res.Cas(), err
+	return rv, cas, nil
 }
 
-func (dbp *DocumentBootstrapPersistence) removeRawConfig(c *gocb.Collection, key string, cas gocb.Cas) (gocb.Cas, error) {
-	deleteRes, err := c.Remove(key, &gocb.RemoveOptions{Cas: cas})
+func (dbp *DocumentBootstrapPersistence) removeRawConfig(c *Collection, key string, cas uint64) (uint64, error) {
+	casOut, err := c.Remove(key, cas)
 	if err != nil {
 		return 0, err
 	}
-	return deleteRes.Cas(), err
+	return casOut, nil
 }
 
-func (dbp *DocumentBootstrapPersistence) replaceRawConfig(c *gocb.Collection, key string, value []byte, cas gocb.Cas) (gocb.Cas, error) {
-	replaceRes, err := c.Replace(key, value, &gocb.ReplaceOptions{Transcoder: gocb.NewRawJSONTranscoder(), Cas: cas})
-	if err != nil {
-		return 0, err
-	}
+func (dbp *DocumentBootstrapPersistence) replaceRawConfig(c *Collection, key string, value []byte, cas uint64) (uint64, error) {
 
-	// For DocumentBootstrapPersistence, cfgCas always equals doc.cas
-	return replaceRes.Cas(), nil
-}
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
 
-func (dbp *DocumentBootstrapPersistence) loadConfig(_ context.Context, c *gocb.Collection, key string, valuePtr any) (cas uint64, err error) {
-
-	res, err := c.Get(key, &gocb.GetOptions{
-		Timeout:       time.Second * 10,
-		RetryStrategy: gocb.NewBestEffortRetryStrategy(nil),
+	result, err := c.agent().Replace(ctx, &gocbcorex.ReplaceOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Value:          value,
+		Cas:            cas,
 	})
 	if err != nil {
-		if errors.Is(err, gocb.ErrDocumentNotFound) {
+		return 0, err
+	}
+
+	return result.Cas, nil
+}
+
+func (dbp *DocumentBootstrapPersistence) loadConfig(_ context.Context, c *Collection, key string, valuePtr any) (cas uint64, err error) {
+
+	cas, err = c.Get(key, valuePtr)
+	if err != nil {
+		if errors.Is(err, memdx.ErrDocNotFound) {
 			return 0, ErrNotFound
 		}
 		return 0, err
 	}
-	err = res.Content(valuePtr)
+
+	return cas, nil
+}
+
+func (dbp *DocumentBootstrapPersistence) insertConfig(c *Collection, key string, value any) (cas uint64, err error) {
+	added, err := c.Add(key, 0, value)
+	if err != nil {
+		return 0, err
+	}
+	if !added {
+		return 0, ErrAlreadyExists
+	}
+	// Add doesn't return a CAS in our interface, need to fetch it
+	_, fetchCas, fetchErr := c.GetRaw(key)
+	if fetchErr != nil {
+		return 0, fetchErr
+	}
+	return fetchCas, nil
+}
+
+func (dbp *DocumentBootstrapPersistence) touchConfigRollback(c *Collection, key, property, value string, cas uint64) (casOut uint64, err error) {
+	valueBytes, err := JSONMarshal(value)
 	if err != nil {
 		return 0, err
 	}
 
-	return uint64(res.Cas()), nil
-}
-
-func (dbp *DocumentBootstrapPersistence) insertConfig(c *gocb.Collection, key string, value any) (cas uint64, err error) {
-	res, err := c.Insert(key, value, nil)
-	if err != nil {
-		if isKVError(err, memd.StatusKeyExists) {
-			return 0, ErrAlreadyExists
-		}
-		return 0, err
+	mutateOps := []memdx.MutateInOp{
+		{
+			Op:    memdx.MutateInOpTypeDictSet,
+			Path:  []byte(property),
+			Value: valueBytes,
+		},
 	}
 
-	return uint64(res.Cas()), nil
-}
+	ctx, cancel := context.WithDeadline(context.Background(), c.Bucket.getBucketOpDeadline())
+	defer cancel()
 
-func (dbp *DocumentBootstrapPersistence) touchConfigRollback(c *gocb.Collection, key, property, value string, cas gocb.Cas) (casOut gocb.Cas, err error) {
-	mutateOps := []gocb.MutateInSpec{
-		gocb.UpsertSpec(property, value, UpsertSpecXattr),
-	}
-	options := &gocb.MutateInOptions{
-		StoreSemantic: gocb.StoreSemanticsReplace,
-		Cas:           cas,
-	}
-	result, mutateErr := c.MutateIn(key, mutateOps, options)
+	result, mutateErr := c.agent().MutateIn(ctx, &gocbcorex.MutateInOptions{
+		Key:            []byte(key),
+		ScopeName:      c.scopeName,
+		CollectionName: c.collectionName,
+		Ops:            mutateOps,
+		Cas:            cas,
+	})
 	if mutateErr != nil {
 		return 0, mutateErr
 	}
-	return result.Cas(), nil
+	return result.Cas, nil
 }
 
 // Common operations that don't depend on storage format
@@ -320,10 +444,6 @@ type CommonBootstrapPersistence struct {
 }
 
 // Check whether the specified key exists.  Ignores format of stored data
-func (cbp *CommonBootstrapPersistence) keyExists(c *gocb.Collection, key string) (bool, error) {
-	res, err := c.Exists(key, nil)
-	if err != nil {
-		return false, err
-	}
-	return res.Exists(), nil
+func (cbp *CommonBootstrapPersistence) keyExists(c *Collection, key string) (bool, error) {
+	return c.Exists(key)
 }

@@ -772,19 +772,22 @@ func WriteDirect(t *testing.T, collection *DatabaseCollection, channelArray []st
 }
 
 // GetIndexPartitionCount returns the number of partitions for a given index. This function queries index nodes directly and would not be suitable for production use, since this port is not generally accessible.
+// TODO: Migrate to gocbcorex-based approach for getting GSI endpoints.
 func GetIndexPartitionCount(t testing.TB, bucket *base.GocbV2Bucket, dsName sgbucket.DataStoreName, indexName string) uint32 {
-	agent, err := bucket.GetGoCBAgent()
+	// Get GSI endpoints via the management API
+	mgmtEps, err := bucket.MgmtEps()
 	require.NoError(t, err)
-	gsiEps := agent.GSIEps()
-	require.Greater(t, len(gsiEps), 0, "No available Couchbase Server nodes for GSI")
+	require.Greater(t, len(mgmtEps), 0, "No available Couchbase Server management endpoints")
 
 	var username, password string
 	if bucket.Spec.Auth != nil {
 		username, password, _ = bucket.Spec.Auth.GetCredentials()
 	}
 	ctx := base.TestCtx(t)
-	uri := "/getIndexStatus"
-	respBytes, statusCode, err := base.MgmtRequest(bucket.HttpClient(ctx), gsiEps[0], http.MethodGet, uri, "application/json", username, password, nil)
+
+	// Fetch index status via management endpoint
+	uri := "/indexStatus"
+	respBytes, statusCode, err := base.MgmtRequest(bucket.HttpClient(ctx), mgmtEps[0], http.MethodGet, uri, "application/json", username, password, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, statusCode, "unexpected status code for %s", respBytes)
 	var output struct {

@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
-	"github.com/couchbase/gocb/v2"
 	"github.com/couchbase/sync_gateway/auth"
 	"github.com/couchbase/sync_gateway/db/functions"
 	"github.com/shirou/gopsutil/v4/mem"
@@ -2198,54 +2197,39 @@ func (sc *ServerContext) CheckSupportedCouchbaseVersion(ctx context.Context) err
 		TLSSkipVerify: base.ValDefault(sc.Config.Bootstrap.ServerTLSSkipVerify, false),
 	}
 
-	securityConfig, err := base.GoCBv2SecurityConfig(ctx, base.Ptr(clusterSpec.TLSSkipVerify), clusterSpec.CACertpath)
-	if err != nil {
-		return fmt.Errorf("failed to create security config: %v", err)
-	}
-
-	authenticator, err := base.GoCBv2Authenticator(clusterSpec.Username, clusterSpec.Password, clusterSpec.X509Certpath, clusterSpec.X509Keypath)
-	if err != nil {
-		return fmt.Errorf("failed to create authenticator: %v", err)
-	}
-
-	cluster, err := gocb.Connect(clusterSpec.Server,
-		gocb.ClusterOptions{
-			Authenticator:  authenticator,
-			SecurityConfig: securityConfig,
-		})
-	if err != nil {
-		return fmt.Errorf("failed to create cluster: %v", err)
-	}
-
-	err = cluster.WaitUntilReady(5*time.Second, &gocb.WaitUntilReadyOptions{
-		ServiceTypes: []gocb.ServiceType{gocb.ServiceTypeManagement},
+	agent, err := base.NewClusterAgent(ctx, clusterSpec, base.CouchbaseClusterWaitUntilReadyOptions{
+		Timeout: 5 * time.Second,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to wait for cluster to become ready: %v", err)
+		return fmt.Errorf("failed to create cluster agent: %v", err)
 	}
+	defer func() {
+		if closeErr := agent.Close(); closeErr != nil {
+			base.WarnfCtx(ctx, "Couldn't close version check agent: %v", closeErr)
+		}
+	}()
 
-	major, minor, err := base.GetClusterVersion(cluster)
+	version, _, err := base.GetCouchbaseServerVersion(agent, clusterSpec)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster version: %v", err)
 	}
 
-	errMsg := fmt.Sprintf(
-		"Sync Gateway requires Couchbase Server %d.%d or later, but found cluster version %d.%d",
-		CBXDCRCompatibleMajorVersion,
-		CBXDCRCompatibleMinorVersion,
-		major,
-		minor,
-	)
+	minimumVersion, err := base.NewComparableBuildVersionFromString(fmt.Sprintf("%d.%d.0", CBXDCRCompatibleMajorVersion, CBXDCRCompatibleMinorVersion))
+	if err != nil {
+		return fmt.Errorf("failed to parse minimum version: %v", err)
+	}
 
-	if !base.IsMinimumVersion(uint64(major), uint64(minor), CBXDCRCompatibleMajorVersion, CBXDCRCompatibleMinorVersion) {
+	if version.Less(minimumVersion) {
+		errMsg := fmt.Sprintf(
+			"Sync Gateway requires Couchbase Server %d.%d or later, but found cluster version %s",
+			CBXDCRCompatibleMajorVersion,
+			CBXDCRCompatibleMinorVersion,
+			version.String(),
+		)
 		base.ErrorfCtx(ctx, "%s", errMsg)
 		return errors.New(errMsg)
 	}
 
-	err = cluster.Close(&gocb.ClusterCloseOptions{})
-	if err != nil {
-		base.WarnfCtx(ctx, "Couldn't close cluster: %v", err)
-	}
 	return nil
 }
 

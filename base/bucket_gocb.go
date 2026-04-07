@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/couchbase/gocb/v2"
 	pkgerrors "github.com/pkg/errors"
 )
 
@@ -32,6 +31,10 @@ const (
 
 	// CRC-32 checksum represents the body hash of "Deleted" document.
 	DeleteCrc32c = "0x00000000"
+
+	// StorageBackend constants matching Couchbase Server values
+	StorageBackendCouchstore = "couchstore"
+	StorageBackendMagma      = "magma"
 )
 
 // If the error is a net/url.Error and the error message is:
@@ -61,13 +64,12 @@ func isGoCBQueryTimeoutError(err error) bool {
 // putDDocForTombstones uses the provided client and endpoints to create a design doc with index_xattr_on_deleted_docs=true
 func putDDocForTombstones(ctx context.Context, name string, payload []byte, capiEps []string, client *http.Client, username string, password string) error {
 
-	// From gocb.Bucket.getViewEp() - pick view endpoint at random
+	// pick view endpoint at random
 	if len(capiEps) == 0 {
 		return errors.New("No available view nodes.")
 	}
 	viewEp := capiEps[rand.Intn(len(capiEps))]
 
-	// Based on implementation in gocb.BucketManager.UpsertDesignDocument
 	uri := fmt.Sprintf("/_design/%s", name)
 	body := bytes.NewReader(payload)
 
@@ -197,7 +199,7 @@ func GoCBBucketMgmtEndpoint(bucket CouchbaseBucketStore) (url string, err error)
 }
 
 // getStorageBackend returns the storage backend type for the bucket.
-func (b *GocbV2Bucket) getStorageBackend(ctx context.Context) (gocb.StorageBackend, error) {
+func (b *GocbV2Bucket) getStorageBackend(ctx context.Context) (string, error) {
 	var bucketResponse struct {
 		StorageBackend string `json:"storageBackend,omitempty"`
 	}
@@ -213,10 +215,10 @@ func (b *GocbV2Bucket) getStorageBackend(ctx context.Context) (gocb.StorageBacke
 	}
 
 	switch bucketResponse.StorageBackend {
-	case string(gocb.StorageBackendCouchstore):
-		return gocb.StorageBackendCouchstore, nil
-	case string(gocb.StorageBackendMagma):
-		return gocb.StorageBackendMagma, nil
+	case StorageBackendCouchstore:
+		return StorageBackendCouchstore, nil
+	case StorageBackendMagma:
+		return StorageBackendMagma, nil
 	default:
 		return "", fmt.Errorf("unknown storage backend type: %s", bucketResponse.StorageBackend)
 	}

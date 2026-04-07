@@ -10,15 +10,16 @@ package base
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
-	"time"
 
 	"dario.cat/mergo"
-	"github.com/couchbase/gocb/v2"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/memdx"
+	"github.com/couchbaselabs/gocbconnstr/v2"
 )
 
 // BootstrapConnection is the interface that can be used to bootstrap Sync Gateway against a Couchbase Server cluster.
@@ -59,17 +60,17 @@ type CouchbaseClusterSpec struct {
 	TLSSkipVerify bool   // If true, do not validate TLS certificate
 }
 
-// CouchbaseCluster is a GoCBv2 implementation of BootstrapConnection
+// CouchbaseCluster is a gocbcorex implementation of BootstrapConnection
 type CouchbaseCluster struct {
-	server                  string
-	clusterOptions          gocb.ClusterOptions
-	forcePerBucketAuth      bool // Forces perBucketAuth authenticators to be used to connect to the bucket
-	perBucketAuth           map[string]*gocb.Authenticator
-	bucketConnectionMode    BucketConnectionMode    // Whether to cache cluster connections
-	cachedClusterConnection *gocb.Cluster           // Cached cluster connection, should only be used by GetConfigBuckets
-	cachedBucketConnections cachedBucketConnections // Per-bucket cached connections
-	cachedConnectionLock    sync.Mutex              // mutex for access to cachedBucketConnections
-	configPersistence       ConfigPersistence       // ConfigPersistence mode
+	server               string
+	auth                 gocbcorex.Authenticator
+	tlsConfig            *tls.Config
+	forcePerBucketAuth   bool                            // Forces perBucketAuth authenticators to be used to connect to the bucket
+	perBucketAuth        map[string]gocbcorex.Authenticator
+	bucketConnectionMode BucketConnectionMode            // Whether to cache cluster connections
+	cachedAgents         cachedAgentConnections           // Per-bucket cached agent connections
+	cachedConnectionLock sync.Mutex                       // mutex for access to cached connections
+	configPersistence    ConfigPersistence                // ConfigPersistence mode
 }
 
 type BucketConnectionMode int
@@ -81,73 +82,73 @@ const (
 	PerUseClusterConnections
 )
 
-type cachedBucket struct {
-	bucket        *gocb.Bucket // underlying bucket
-	bucketCloseFn func()       // teardown function which will close the gocb connection
-	refcount      int          // count of how many functions are using this cachedBucket
-	shouldClose   bool         // mark this cachedBucket as needing to be closed with ref
+type cachedAgent struct {
+	agent     *gocbcorex.Agent // underlying agent
+	closeFn   func()           // teardown function which will close the agent connection
+	refcount  int              // count of how many functions are using this cachedAgent
+	shouldClose bool           // mark this cachedAgent as needing to be closed with ref
 }
 
-// cahedBucketConnections is a lockable map cached buckets containing refcounts
-type cachedBucketConnections struct {
-	buckets map[string]*cachedBucket
-	lock    sync.Mutex
+// cachedAgentConnections is a lockable map of cached agents containing refcounts
+type cachedAgentConnections struct {
+	agents map[string]*cachedAgent
+	lock   sync.Mutex
 }
 
-// removeOutdatedBuckets marks any active buckets for closure and removes the cached connections.
-func (c *cachedBucketConnections) removeOutdatedBuckets(activeBuckets Set) {
+// removeOutdatedBuckets marks any active agents for closure and removes the cached connections.
+func (c *cachedAgentConnections) removeOutdatedBuckets(activeBuckets Set) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	for bucketName, bucket := range c.buckets {
+	for bucketName, agent := range c.agents {
 		_, exists := activeBuckets[bucketName]
 		if exists {
 			continue
 		}
-		bucket.shouldClose = true
+		agent.shouldClose = true
 		c._teardown(bucketName)
 	}
 }
 
-// closeAll removes all cached bucekts
-func (c *cachedBucketConnections) closeAll() {
+// closeAll removes all cached agents
+func (c *cachedAgentConnections) closeAll() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	for _, bucket := range c.buckets {
-		bucket.shouldClose = true
-		bucket.bucketCloseFn()
+	for _, agent := range c.agents {
+		agent.shouldClose = true
+		agent.closeFn()
 	}
 }
 
-// teardown closes the cached bucket connection while locked, suitable for CouchbaseCluster.getBucket() teardowns
-func (c *cachedBucketConnections) teardown(bucketName string) {
+// teardown closes the cached agent connection while locked
+func (c *cachedAgentConnections) teardown(bucketName string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	c.buckets[bucketName].refcount--
+	c.agents[bucketName].refcount--
 	c._teardown(bucketName)
 }
 
-// _teardown closes expects the lock to be acquired before calling this function and the reference count to be up to date.
-func (c *cachedBucketConnections) _teardown(bucketName string) {
-	if !c.buckets[bucketName].shouldClose || c.buckets[bucketName].refcount > 0 {
+// _teardown expects the lock to be acquired before calling this function and the reference count to be up to date.
+func (c *cachedAgentConnections) _teardown(bucketName string) {
+	if !c.agents[bucketName].shouldClose || c.agents[bucketName].refcount > 0 {
 		return
 	}
-	c.buckets[bucketName].bucketCloseFn()
-	delete(c.buckets, bucketName)
+	c.agents[bucketName].closeFn()
+	delete(c.agents, bucketName)
 }
 
-// get returns a cachedBucket for a given bucketName, or nil if it doesn't exist
-func (c *cachedBucketConnections) _get(bucketName string) *cachedBucket {
-	bucket, ok := c.buckets[bucketName]
+// _get returns a cachedAgent for a given bucketName, or nil if it doesn't exist
+func (c *cachedAgentConnections) _get(bucketName string) *cachedAgent {
+	agent, ok := c.agents[bucketName]
 	if !ok {
 		return nil
 	}
-	c.buckets[bucketName].refcount++
-	return bucket
+	c.agents[bucketName].refcount++
+	return agent
 }
 
-// set adds a cachedBucket for a given bucketName, or nil if it doesn't exist
-func (c *cachedBucketConnections) _set(bucketName string, bucket *cachedBucket) {
-	c.buckets[bucketName] = bucket
+// _set adds a cachedAgent for a given bucketName
+func (c *cachedAgentConnections) _set(bucketName string, agent *cachedAgent) {
+	c.agents[bucketName] = agent
 }
 
 var _ BootstrapConnection = &CouchbaseCluster{}
@@ -156,12 +157,13 @@ var _ BootstrapConnection = &CouchbaseCluster{}
 func NewCouchbaseCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec,
 	forcePerBucketAuth bool, perBucketCreds PerBucketCredentialsConfig,
 	useXattrConfig bool, bucketMode BucketConnectionMode) (*CouchbaseCluster, error) {
-	securityConfig, err := GoCBv2SecurityConfig(ctx, Ptr(clusterSpec.TLSSkipVerify), clusterSpec.CACertpath)
+
+	tlsConfig, err := GocbcorexTLSConfig(ctx, Ptr(clusterSpec.TLSSkipVerify), clusterSpec.CACertpath)
 	if err != nil {
 		return nil, err
 	}
 
-	clusterAuthConfig, err := GoCBv2Authenticator(
+	auth, err := GocbcorexAuthenticator(
 		clusterSpec.Username, clusterSpec.Password,
 		clusterSpec.X509Certpath, clusterSpec.X509Keypath,
 	)
@@ -170,35 +172,29 @@ func NewCouchbaseCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec,
 	}
 
 	// Populate individual bucket credentials
-	perBucketAuth := make(map[string]*gocb.Authenticator, len(perBucketCreds))
+	perBucketAuthMap := make(map[string]gocbcorex.Authenticator, len(perBucketCreds))
 	for bucket, credentials := range perBucketCreds {
-		authenticator, err := GoCBv2Authenticator(
+		bucketAuth, err := GocbcorexAuthenticator(
 			credentials.Username, credentials.Password,
 			credentials.X509CertPath, credentials.X509KeyPath,
 		)
 		if err != nil {
 			return nil, err
 		}
-		perBucketAuth[bucket] = &authenticator
-	}
-
-	clusterOptions := gocb.ClusterOptions{
-		Authenticator:  clusterAuthConfig,
-		SecurityConfig: securityConfig,
-		TimeoutsConfig: GoCBv2TimeoutsConfig(nil, nil),
-		RetryStrategy:  gocb.NewBestEffortRetryStrategy(nil),
+		perBucketAuthMap[bucket] = bucketAuth
 	}
 
 	cbCluster := &CouchbaseCluster{
 		server:               clusterSpec.Server,
+		auth:                 auth,
+		tlsConfig:            tlsConfig,
 		forcePerBucketAuth:   forcePerBucketAuth,
-		perBucketAuth:        perBucketAuth,
-		clusterOptions:       clusterOptions,
+		perBucketAuth:        perBucketAuthMap,
 		bucketConnectionMode: bucketMode,
 	}
 
 	if bucketMode == CachedClusterConnections {
-		cbCluster.cachedBucketConnections = cachedBucketConnections{buckets: make(map[string]*cachedBucket)}
+		cbCluster.cachedAgents = cachedAgentConnections{agents: make(map[string]*cachedAgent)}
 	}
 
 	cbCluster.configPersistence = &DocumentBootstrapPersistence{}
@@ -209,86 +205,64 @@ func NewCouchbaseCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec,
 	return cbCluster, nil
 }
 
-// connect attempts to open a gocb.Cluster connection. Callers will be responsible for closing the connection.
-// Pass an authenticator to use that to connect instead of using the cluster credentials.
-func (cc *CouchbaseCluster) connect(auth *gocb.Authenticator) (*gocb.Cluster, error) {
-	clusterOptions := cc.clusterOptions
-	if auth != nil {
-		clusterOptions.Authenticator = *auth
-		clusterOptions.Username = ""
-		clusterOptions.Password = ""
+// createAgent creates a gocbcorex.Agent for the specified bucket.
+func (cc *CouchbaseCluster) createAgent(ctx context.Context, bucketName string) (*gocbcorex.Agent, func(), error) {
+
+	auth := cc.auth
+	if bucketAuth, set := cc.perBucketAuth[bucketName]; set {
+		auth = bucketAuth
+	} else if cc.forcePerBucketAuth {
+		return nil, nil, fmt.Errorf("unable to get bucket %q since credentials are not defined in bucket_credentials", MD(bucketName).Redact())
 	}
 
-	cluster, err := gocb.Connect(cc.server, clusterOptions)
+	connSpec, err := gocbconnstr.Parse(cc.server)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("unable to parse connection string for agent creation: %w", err)
 	}
+	seedConfig := buildSeedConfig(connSpec)
 
-	err = cluster.WaitUntilReady(time.Second*10, &gocb.WaitUntilReadyOptions{
-		DesiredState:  gocb.ClusterStateOnline,
-		ServiceTypes:  []gocb.ServiceType{gocb.ServiceTypeManagement},
-		RetryStrategy: &goCBv2FailFastRetryStrategy{},
+	agent, err := gocbcorex.CreateAgent(ctx, gocbcorex.AgentOptions{
+		Authenticator: auth,
+		TLSConfig:     cc.tlsConfig,
+		SeedConfig:    seedConfig,
+		BucketName:    bucketName,
 	})
 	if err != nil {
-		_ = cluster.Close(nil)
-		return nil, err
+		return nil, nil, err
 	}
 
-	return cluster, nil
+	teardownFn := func() {
+		if closeErr := agent.Close(); closeErr != nil {
+			WarnfCtx(ctx, "Failed to close agent for bucket %s: %v", MD(bucketName), closeErr)
+		}
+	}
+
+	return agent, teardownFn, nil
 }
 
-func (cc *CouchbaseCluster) getClusterConnection() (*gocb.Cluster, error) {
-
-	if cc.bucketConnectionMode == PerUseClusterConnections {
-		return cc.connect(nil)
+// defaultCollection returns a *Collection wrapper for the default collection of the given agent.
+func (cc *CouchbaseCluster) defaultCollection(agent *gocbcorex.Agent, bucketName string) *Collection {
+	return &Collection{
+		Bucket: &GocbV2Bucket{
+			agent: agent,
+			Spec: BucketSpec{
+				BucketName: bucketName,
+			},
+		},
+		scopeName:      DefaultScope,
+		collectionName: DefaultCollection,
 	}
-
-	cc.cachedConnectionLock.Lock()
-	defer cc.cachedConnectionLock.Unlock()
-	if cc.cachedClusterConnection != nil {
-		return cc.cachedClusterConnection, nil
-	}
-
-	clusterConnection, err := cc.connect(nil)
-	if err != nil {
-		return nil, err
-	}
-	cc.cachedClusterConnection = clusterConnection
-	return cc.cachedClusterConnection, nil
-
 }
 
-func (cc *CouchbaseCluster) GetConfigBuckets(context.Context) ([]string, error) {
+func (cc *CouchbaseCluster) GetConfigBuckets(ctx context.Context) ([]string, error) {
 	if cc == nil {
 		return nil, errors.New("nil CouchbaseCluster")
 	}
 
-	connection, err := cc.getClusterConnection()
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		if cc.bucketConnectionMode == PerUseClusterConnections {
-			_ = connection.Close(nil)
-		}
-	}()
-
-	buckets, err := connection.Buckets().GetAllBuckets(nil)
-	if err != nil {
-		cc.cachedClusterConnection = nil
-		return nil, err
-	}
-
-	bucketList := make([]string, 0, len(buckets))
-	for bucketName := range buckets {
-		bucketList = append(bucketList, bucketName)
-	}
-
-	sort.Strings(bucketList)
-	cc.cachedBucketConnections.removeOutdatedBuckets(SetOf(bucketList...))
-
-	return bucketList, nil
+	// TODO: Implement bucket listing via gocbcorex management API
+	// This requires creating an agent without a bucket name and using the management HTTP API.
+	// For now, this is a stub that needs to be completed.
+	return nil, fmt.Errorf("GetConfigBuckets not yet implemented with gocbcorex")
 }
 
 func (cc *CouchbaseCluster) GetMetadataDocument(ctx context.Context, location, docID string, valuePtr any) (cas uint64, err error) {
@@ -296,15 +270,14 @@ func (cc *CouchbaseCluster) GetMetadataDocument(ctx context.Context, location, d
 		return 0, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
-
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return 0, err
 	}
-
 	defer teardown()
 
-	cas, err = cc.configPersistence.loadConfig(ctx, b.DefaultCollection(), docID, valuePtr)
+	coll := cc.defaultCollection(agent, location)
+	cas, err = cc.configPersistence.loadConfig(ctx, coll, docID, valuePtr)
 	SyncGatewayStats.GlobalStats.ResourceUtilizationStats().NumIdleKvOps.Add(1)
 	return cas, err
 }
@@ -314,13 +287,14 @@ func (cc *CouchbaseCluster) InsertMetadataDocument(ctx context.Context, location
 		return 0, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return 0, err
 	}
 	defer teardown()
 
-	return cc.configPersistence.insertConfig(b.DefaultCollection(), key, value)
+	coll := cc.defaultCollection(agent, location)
+	return cc.configPersistence.insertConfig(coll, key, value)
 }
 
 // WriteMetadataDocument writes a metadata document, and fails on CAS mismatch
@@ -332,7 +306,7 @@ func (cc *CouchbaseCluster) WriteMetadataDocument(ctx context.Context, location,
 		return 0, RedactErrorf("CAS for %q in bucket %q must be non-zero to call WriteMetadataDocument, to add a new document use InsertMetadataDocument", MD(docID), MD(location))
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return 0, err
 	}
@@ -343,8 +317,8 @@ func (cc *CouchbaseCluster) WriteMetadataDocument(ctx context.Context, location,
 		return 0, err
 	}
 
-	casOut, err := cc.configPersistence.replaceRawConfig(b.DefaultCollection(), docID, rawDocument, gocb.Cas(cas))
-	return uint64(casOut), err
+	coll := cc.defaultCollection(agent, location)
+	return cc.configPersistence.replaceRawConfig(coll, docID, rawDocument, cas)
 }
 
 func (cc *CouchbaseCluster) TouchMetadataDocument(ctx context.Context, location, docID string, property, value string, cas uint64) (newCAS uint64, err error) {
@@ -353,15 +327,14 @@ func (cc *CouchbaseCluster) TouchMetadataDocument(ctx context.Context, location,
 		return 0, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return 0, err
 	}
 	defer teardown()
 
-	casOut, err := cc.configPersistence.touchConfigRollback(b.DefaultCollection(), docID, property, value, gocb.Cas(cas))
-	return uint64(casOut), err
-
+	coll := cc.defaultCollection(agent, location)
+	return cc.configPersistence.touchConfigRollback(coll, docID, property, value, cas)
 }
 
 func (cc *CouchbaseCluster) DeleteMetadataDocument(ctx context.Context, location, key string, cas uint64) (err error) {
@@ -369,13 +342,14 @@ func (cc *CouchbaseCluster) DeleteMetadataDocument(ctx context.Context, location
 		return errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return err
 	}
 	defer teardown()
 
-	_, removeErr := cc.configPersistence.removeRawConfig(b.DefaultCollection(), key, gocb.Cas(cas))
+	coll := cc.defaultCollection(agent, location)
+	_, removeErr := cc.configPersistence.removeRawConfig(coll, key, cas)
 	return removeErr
 }
 
@@ -385,47 +359,47 @@ func (cc *CouchbaseCluster) UpdateMetadataDocument(ctx context.Context, location
 		return 0, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return 0, err
 	}
 	defer teardown()
 
-	collection := b.DefaultCollection()
+	coll := cc.defaultCollection(agent, location)
 
 	for {
-		bucketValue, cas, err := cc.configPersistence.loadRawConfig(ctx, collection, docID)
+		bucketValue, cas, err := cc.configPersistence.loadRawConfig(ctx, coll, docID)
 		if err != nil {
 			return 0, err
 		}
-		newConfig, err := updateCallback(bucketValue, uint64(cas))
+		newConfig, err := updateCallback(bucketValue, cas)
 		if err != nil {
 			return 0, err
 		}
 
 		// handle delete when updateCallback returns nil
 		if newConfig == nil {
-			removeCasOut, err := cc.configPersistence.removeRawConfig(collection, docID, cas)
+			removeCasOut, err := cc.configPersistence.removeRawConfig(coll, docID, cas)
 			if err != nil {
 				// retry on cas failure
-				if errors.Is(err, gocb.ErrCasMismatch) {
+				if errors.Is(err, memdx.ErrCasMismatch) {
 					continue
 				}
 				return 0, err
 			}
-			return uint64(removeCasOut), nil
+			return removeCasOut, nil
 		}
 
-		replaceCfgCasOut, err := cc.configPersistence.replaceRawConfig(collection, docID, newConfig, cas)
+		replaceCfgCasOut, err := cc.configPersistence.replaceRawConfig(coll, docID, newConfig, cas)
 		if err != nil {
-			if errors.Is(err, gocb.ErrCasMismatch) {
+			if errors.Is(err, memdx.ErrCasMismatch) {
 				// retry on cas failure
 				continue
 			}
 			return 0, err
 		}
 
-		return uint64(replaceCfgCasOut), nil
+		return replaceCfgCasOut, nil
 	}
 
 }
@@ -436,15 +410,14 @@ func (cc *CouchbaseCluster) KeyExists(ctx context.Context, location, docID strin
 		return false, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, location)
-
+	agent, teardown, err := cc.getAgent(ctx, location)
 	if err != nil {
 		return false, err
 	}
-
 	defer teardown()
 
-	return cc.configPersistence.keyExists(b.DefaultCollection(), docID)
+	coll := cc.defaultCollection(agent, location)
+	return cc.configPersistence.keyExists(coll, docID)
 }
 
 // GetDocument fetches a document from the default collection.  Does not use configPersistence - callers
@@ -454,116 +427,62 @@ func (cc *CouchbaseCluster) GetDocument(ctx context.Context, bucketName, docID s
 		return false, errors.New("nil CouchbaseCluster")
 	}
 
-	b, teardown, err := cc.getBucket(ctx, bucketName)
+	agent, teardown, err := cc.getAgent(ctx, bucketName)
 	if err != nil {
 		return false, err
 	}
-
 	defer teardown()
 
-	getOptions := &gocb.GetOptions{
-		Transcoder: NewSGJSONTranscoder(),
-	}
-	getResult, err := b.DefaultCollection().Get(docID, getOptions)
-	if err != nil {
-		if errors.Is(err, gocb.ErrDocumentNotFound) {
+	coll := cc.defaultCollection(agent, bucketName)
+	_, getErr := coll.Get(docID, rv)
+	if getErr != nil {
+		if errors.Is(getErr, memdx.ErrDocNotFound) {
 			return false, nil
 		}
-		return false, err
+		return false, getErr
 	}
-	err = getResult.Content(rv)
-	return true, err
+	return true, nil
 }
 
-// Close calls teardown for any cached buckets and removes from cachedBucketConnections
+// Close calls teardown for any cached agents and removes from cachedAgents
 func (cc *CouchbaseCluster) Close() {
 
-	cc.cachedBucketConnections.closeAll()
-
-	cc.cachedConnectionLock.Lock()
-	defer cc.cachedConnectionLock.Unlock()
-
-	if cc.cachedClusterConnection != nil {
-		_ = cc.cachedClusterConnection.Close(nil)
-		cc.cachedClusterConnection = nil
-	}
+	cc.cachedAgents.closeAll()
 }
 
-func (cc *CouchbaseCluster) getBucket(ctx context.Context, bucketName string) (b *gocb.Bucket, teardownFn func(), err error) {
+func (cc *CouchbaseCluster) getAgent(ctx context.Context, bucketName string) (agent *gocbcorex.Agent, teardownFn func(), err error) {
 
 	if cc.bucketConnectionMode != CachedClusterConnections {
-		return cc.connectToBucket(ctx, bucketName)
+		return cc.createAgent(ctx, bucketName)
 	}
 
 	teardownFn = func() {
-		cc.cachedBucketConnections.teardown(bucketName)
+		cc.cachedAgents.teardown(bucketName)
 	}
-	cc.cachedBucketConnections.lock.Lock()
-	defer cc.cachedBucketConnections.lock.Unlock()
-	bucket := cc.cachedBucketConnections._get(bucketName)
-	if bucket != nil {
-		return bucket.bucket, teardownFn, nil
+	cc.cachedAgents.lock.Lock()
+	defer cc.cachedAgents.lock.Unlock()
+	cached := cc.cachedAgents._get(bucketName)
+	if cached != nil {
+		return cached.agent, teardownFn, nil
 	}
 
-	// cached bucket not found, connect and add
-	newBucket, bucketCloseFn, err := cc.connectToBucket(ctx, bucketName)
+	// cached agent not found, connect and add
+	newAgent, closeFn, err := cc.createAgent(ctx, bucketName)
 	if err != nil {
 		return nil, nil, err
 	}
-	cc.cachedBucketConnections._set(bucketName, &cachedBucket{
-		bucket:        newBucket,
-		bucketCloseFn: bucketCloseFn,
-		refcount:      1,
+	cc.cachedAgents._set(bucketName, &cachedAgent{
+		agent:    newAgent,
+		closeFn:  closeFn,
+		refcount: 1,
 	})
 
-	return newBucket, teardownFn, nil
+	return newAgent, teardownFn, nil
 }
 
-func (cc *CouchbaseCluster) GetClusterConnectionForBucket(ctx context.Context, bucketName string) (connection *gocb.Cluster, teardownFn func(), err error) {
-	if bucketAuth, set := cc.perBucketAuth[bucketName]; set {
-		connection, err = cc.connect(bucketAuth)
-	} else if cc.forcePerBucketAuth {
-		return nil, nil, fmt.Errorf("unable to get bucket %q since credentials are not defined in bucket_credentials", MD(bucketName).Redact())
-	} else {
-		connection, err = cc.connect(nil)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-
-	teardownFn = func() {
-		err := connection.Close(&gocb.ClusterCloseOptions{})
-		if err != nil {
-			WarnfCtx(ctx, "Failed to close cluster connection: %v", err)
-		}
-	}
-	return connection, teardownFn, nil
-}
-
-// connectToBucket establishes a new connection to a bucket, and returns the bucket after waiting for it to be ready.
-func (cc *CouchbaseCluster) connectToBucket(ctx context.Context, bucketName string) (b *gocb.Bucket, teardownFn func(), err error) {
-	connection, teardownFn, err := cc.GetClusterConnectionForBucket(ctx, bucketName)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	b = connection.Bucket(bucketName)
-	err = b.WaitUntilReady(time.Second*10, &gocb.WaitUntilReadyOptions{
-		DesiredState:  gocb.ClusterStateOnline,
-		RetryStrategy: &goCBv2FailFastRetryStrategy{},
-		ServiceTypes:  []gocb.ServiceType{gocb.ServiceTypeKeyValue},
-	})
-	if err != nil {
-		teardownFn()
-
-		if errors.Is(err, gocb.ErrAuthenticationFailure) {
-			return nil, nil, ErrAuthError
-		}
-
-		return nil, nil, err
-	}
-
-	return b, teardownFn, nil
+// GetAgentForBucket returns a gocbcorex.Agent for the specified bucket.
+func (cc *CouchbaseCluster) GetAgentForBucket(ctx context.Context, bucketName string) (agent *gocbcorex.Agent, teardownFn func(), err error) {
+	return cc.createAgent(ctx, bucketName)
 }
 
 type PerBucketCredentialsConfig map[string]*CredentialsConfig

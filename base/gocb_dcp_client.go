@@ -342,6 +342,8 @@ func (dc *GoCBDCPClient) close() {
 }
 
 // getAgentConfig returns a gocbcore.DCPAgentConfig for the given BucketSpec
+// TODO: This entire DCP subsystem needs to be migrated from gocbcore.DCPAgent to gocbcorex DCP.
+// For now, we use PasswordAuthProvider directly with BucketSpec credentials.
 func (dc *GoCBDCPClient) getAgentConfig(spec BucketSpec) (*gocbcore.DCPAgentConfig, error) {
 	connStr, err := spec.GetGoCBConnStringForDCP()
 	if err != nil {
@@ -363,9 +365,12 @@ func (dc *GoCBDCPClient) getAgentConfig(spec BucketSpec) (*gocbcore.DCPAgentConf
 		DebugfCtx(dc.ctx, KeyAll, "Parsed cluster connection string %q in: %v", UD(connStr), d)
 	}
 
-	auth, authErr := spec.GocbcoreAuthProvider()
-	if authErr != nil {
-		return nil, fmt.Errorf("Unable to start DCP Client - error creating authenticator: %w", authErr)
+	// TODO: Migrate DCP to use gocbcorex DCP directly instead of gocbcore.
+	// For now, create a gocbcore-compatible auth from the BucketSpec credentials.
+	username, password, _ := spec.Auth.GetCredentials()
+	auth := &gocbcore.PasswordAuthProvider{
+		Username: username,
+		Password: password,
 	}
 
 	tlsRootCAProvider, err := GoCBCoreTLSRootCAProvider(dc.ctx, &spec.TLSSkipVerify, spec.CACertPath)

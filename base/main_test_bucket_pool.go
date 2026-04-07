@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbaselabs/rosmar"
 	"github.com/pkg/errors"
@@ -363,14 +362,10 @@ func (tbp *TestBucketPool) GetWalrusTestBucket(t testing.TB, url string) (b Buck
 func (tbp *TestBucketPool) GetExistingBucket(t testing.TB) (b Bucket, s BucketSpec, teardown func(context.Context)) {
 	ctx := TestCtx(t)
 
-	// each bucket opens its own cluster connection since Bucket.Close will close the underlying gocb.Cluster
-	bucketCluster, connstr, err := getGocbClusterForTest(ctx, tbp.clusterSpec)
-	require.NoError(t, err, "couldn't get gocb cluster for test")
-
 	bucketName := tbpBucketName(TestUseExistingBucketName())
 	bucketSpec := getTestBucketSpec(tbp.clusterSpec, bucketName)
-	bucketFromSpec, err := GetGocbV2BucketFromCluster(ctx, bucketCluster, bucketSpec, connstr, waitForReadyBucketTimeout, false)
-	require.NoError(t, err, "couldn't get bucket from cluster")
+	bucketFromSpec, err := GetGoCBv2Bucket(ctx, bucketSpec)
+	require.NoError(t, err, "couldn't get bucket")
 
 	return bucketFromSpec, bucketSpec, func(ctx context.Context) {
 		tbp.Logf(ctx, "Teardown called - Closing connection to existing bucket")
@@ -770,7 +765,7 @@ func (tbp *TestBucketPool) supportsViews() bool {
 	if !tbp.integrationMode {
 		return true
 	}
-	return tbp.cluster.storageBackend != gocb.StorageBackendMagma
+	return tbp.cluster.storageBackend != "magma"
 }
 
 // TBPBucketInitFunc is a function that is run once (synchronously) when creating/opening a bucket.

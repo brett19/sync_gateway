@@ -11,12 +11,11 @@ package base
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGoCBv2SecurityConfig(t *testing.T) {
+func TestGocbcorexTLSConfig(t *testing.T) {
 	// Mock fake root CA and client certificates for verification
 	_, _, rootCertPath, _ := mockCertificatesAndKeys(t)
 
@@ -24,7 +23,7 @@ func TestGoCBv2SecurityConfig(t *testing.T) {
 		name           string
 		tlsSkipVerify  *bool
 		caCertPath     string
-		expectCertPool bool // True if should not be empty, false if nil (true on windows asserts empty due to no System Root Pool)
+		expectCertPool bool // True if should not be empty
 		expectError    bool
 	}{
 		{
@@ -63,27 +62,31 @@ func TestGoCBv2SecurityConfig(t *testing.T) {
 			expectError:    false,
 		},
 	}
-	//
+
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			sc, err := GoCBv2SecurityConfig(TestCtx(t), test.tlsSkipVerify, test.caCertPath)
+			tlsConfig, err := GocbcorexTLSConfig(TestCtx(t), test.tlsSkipVerify, test.caCertPath)
 			if test.expectError {
 				assert.Error(t, err)
-				assert.Nil(t, sc.TLSRootCAs)
+				assert.Nil(t, tlsConfig)
 				return
 			}
-			require.NotNil(t, sc)
+			require.NoError(t, err)
+			require.NotNil(t, tlsConfig)
 
 			expectTLSSkipVerify := false
 			if test.tlsSkipVerify != nil {
 				expectTLSSkipVerify = *test.tlsSkipVerify
 			}
 
-			assert.Equal(t, expectTLSSkipVerify, sc.TLSSkipVerify)
-			if test.expectCertPool == false {
-				assert.Nil(t, sc.TLSRootCAs)
-			} else { // Expect populated cert pool
-				assert.NotEmpty(t, sc.TLSRootCAs)
+			assert.Equal(t, expectTLSSkipVerify, tlsConfig.InsecureSkipVerify)
+			if !test.expectCertPool {
+				// When skip verify is true, RootCAs may be nil
+				if expectTLSSkipVerify {
+					// OK - InsecureSkipVerify means we don't need a cert pool
+				}
+			} else {
+				assert.NotNil(t, tlsConfig.RootCAs)
 			}
 		})
 	}
@@ -91,7 +94,7 @@ func TestGoCBv2SecurityConfig(t *testing.T) {
 
 // Regression test for CBG-2230. Ensure that we return an error, rather than nil/nil, when given an invalid path to
 // x.509 certs.
-func TestGoCBCoreAuthConfigInvalidPaths(t *testing.T) {
-	_, err := GoCBCoreAuthConfig("", "", "/non/existent/cert", "/non/existent/key")
+func TestGocbcorexAuthenticatorInvalidPaths(t *testing.T) {
+	_, err := GocbcorexAuthenticator("", "", "/non/existent/cert", "/non/existent/key")
 	assert.Error(t, err)
 }

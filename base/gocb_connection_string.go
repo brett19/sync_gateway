@@ -13,7 +13,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/couchbaselabs/gocbconnstr"
+	"github.com/couchbaselabs/gocbconnstr/v2"
 )
 
 const (

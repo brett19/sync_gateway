@@ -12,6 +12,7 @@ import (
 	"context"
 	"expvar"
 	"fmt"
+	"strconv"
 
 	"github.com/couchbase/gocbcore/v10"
 	sgbucket "github.com/couchbase/sg-bucket"
@@ -77,7 +78,11 @@ func StartGocbDCPFeed(ctx context.Context, bucket *GocbV2Bucket, bucketName stri
 						if collectionName != manifestCollection.Name {
 							continue
 						}
-						collectionIDs = append(collectionIDs, manifestCollection.UID)
+						cid, parseErr := strconv.ParseUint(manifestCollection.UID, 16, 32)
+						if parseErr != nil {
+							return fmt.Errorf("failed to parse collection UID %q: %w", manifestCollection.UID, parseErr)
+						}
+						collectionIDs = append(collectionIDs, uint32(cid))
 						collectionsFound[collectionName] = struct{}{}
 					}
 				}

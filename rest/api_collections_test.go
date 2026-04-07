@@ -624,13 +624,10 @@ func TestCollectionsChangeConfigScope(t *testing.T) {
 		require.NoError(t, tb.CreateDataStore(ctx, col))
 	}
 	defer func() {
-		collection, err := base.AsCollection(tb.DefaultDataStore())
-		require.NoError(t, err)
-		cm := collection.Collection.Bucket().Collections()
 		for _, col := range collectionNames {
 			assert.NoError(t, tb.DropDataStore(col))
-			assert.NoError(t, cm.DropScope(col.ScopeName(), nil))
 		}
+		// TODO: Drop scopes when gocbcorex scope management is available
 	}()
 
 	rt := NewRestTester(t, &RestTesterConfig{

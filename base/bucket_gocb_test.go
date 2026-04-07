@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1787,132 +1786,21 @@ func TestGetXattrAndBody(t *testing.T) {
 }
 
 func TestApplyViewQueryOptions(t *testing.T) {
-
-	// View query params map (go-couchbase/walrus style)
-	params := map[string]any{
-		ViewQueryParamStale:         false,
-		ViewQueryParamReduce:        true,
-		ViewQueryParamStartKey:      "foo",
-		ViewQueryParamEndKey:        "bar",
-		ViewQueryParamInclusiveEnd:  true,
-		ViewQueryParamLimit:         uint64(1),
-		ViewQueryParamIncludeDocs:   true, // Ignored -- see https://forums.couchbase.com/t/do-the-viewquery-options-omit-include-docs-on-purpose/12399
-		ViewQueryParamDescending:    true,
-		ViewQueryParamGroup:         true,
-		ViewQueryParamSkip:          uint64(2),
-		ViewQueryParamGroupLevel:    uint64(3),
-		ViewQueryParamStartKeyDocId: "baz",
-		ViewQueryParamEndKeyDocId:   "blah",
-		ViewQueryParamKey:           "hello",
-		ViewQueryParamKeys:          []any{"a", "b"},
-	}
-	ctx := TestCtx(t)
-	// Call applyViewQueryOptions (method being tested) which modifies viewQuery according to params
-	viewOpts, err := createViewOptions(ctx, params)
-	if err != nil {
-		t.Fatalf("Error calling applyViewQueryOptions: %v", err)
-	}
-
-	// "stale"
-	assert.Equal(t, gocb.ViewScanConsistencyRequestPlus, viewOpts.ScanConsistency)
-
-	// "reduce"
-	assert.Equal(t, true, viewOpts.Reduce)
-
-	// "startkey"
-	assert.Equal(t, "foo", viewOpts.StartKey)
-
-	// "endkey"
-	assert.Equal(t, "bar", viewOpts.EndKey)
-
-	// "inclusive_end"
-	assert.Equal(t, true, viewOpts.InclusiveEnd)
-
-	// "limit"
-	assert.Equal(t, uint32(1), viewOpts.Limit)
-
-	// "descending"
-	assert.Equal(t, gocb.ViewOrderingDescending, viewOpts.Order)
-
-	// "group"
-	assert.Equal(t, true, viewOpts.Group)
-
-	// "skip"
-	assert.Equal(t, uint32(2), viewOpts.Skip)
-
-	// "group_level"
-	assert.Equal(t, uint32(3), viewOpts.GroupLevel)
-
-	// "startkey_docid"
-	assert.Equal(t, "baz", viewOpts.StartKeyDocID)
-
-	// "endkey_docid"
-	assert.Equal(t, "blah", viewOpts.EndKeyDocID)
-
-	// "key"
-	assert.Equal(t, "hello", viewOpts.Key)
-
-	// "keys"
-	assert.Equal(t,
-
-		[]any{"a", "b"}, viewOpts.Keys)
-
+	// Views are no longer supported - stubbed out as part of gocbcorex migration.
+	t.Skip("Views are not supported with gocbcorex")
 }
 
 // In certain cases, the params will have strings instead of bools
 // https://github.com/couchbase/sync_gateway/issues/2423#issuecomment-296245658
 func TestApplyViewQueryOptionsWithStrings(t *testing.T) {
-
-	// View query params map (go-couchbase/walrus style)
-	params := map[string]any{
-		ViewQueryParamStale:         "false",
-		ViewQueryParamReduce:        "true",
-		ViewQueryParamStartKey:      "foo",
-		ViewQueryParamEndKey:        "bar",
-		ViewQueryParamInclusiveEnd:  "true",
-		ViewQueryParamLimit:         "1",
-		ViewQueryParamIncludeDocs:   "true", // Ignored -- see https://forums.couchbase.com/t/do-the-viewquery-options-omit-include-docs-on-purpose/12399
-		ViewQueryParamDescending:    "true",
-		ViewQueryParamGroup:         "true",
-		ViewQueryParamSkip:          "2",
-		ViewQueryParamGroupLevel:    "3",
-		ViewQueryParamStartKeyDocId: "baz",
-		ViewQueryParamEndKeyDocId:   "blah",
-		ViewQueryParamKey:           "hello",
-		ViewQueryParamKeys:          []string{"a", "b"},
-	}
-
-	_, err := createViewOptions(TestCtx(t), params)
-	if err != nil {
-		t.Fatalf("Error calling applyViewQueryOptions: %v", err)
-	}
-
-	// if it doesn't blow up, test passes
-
+	// Views are no longer supported - stubbed out as part of gocbcorex migration.
+	t.Skip("Views are not supported with gocbcorex")
 }
 
 // Validate non-bool stale handling
 func TestApplyViewQueryStaleOptions(t *testing.T) {
-
-	// View query params map (go-couchbase/walrus style)
-	params := map[string]any{
-		ViewQueryParamStale: "false",
-	}
-
-	ctx := TestCtx(t)
-	// if it doesn't blow up, test passes
-	if _, err := createViewOptions(ctx, params); err != nil {
-		t.Fatalf("Error calling applyViewQueryOptions: %v", err)
-	}
-
-	params = map[string]any{
-		ViewQueryParamStale: "ok",
-	}
-
-	if _, err := createViewOptions(ctx, params); err != nil {
-		t.Fatalf("Error calling applyViewQueryOptions: %v", err)
-	}
-
+	// Views are no longer supported - stubbed out as part of gocbcorex migration.
+	t.Skip("Views are not supported with gocbcorex")
 }
 
 func TestCouchbaseServerMaxTTL(t *testing.T) {

@@ -11,33 +11,30 @@ package base
 import (
 	"context"
 
-	"github.com/couchbase/gocb/v2"
 	sgbucket "github.com/couchbase/sg-bucket"
 )
 
-// Fills in the GoCB UpsertOptions based on the passed in SG Bucket UpsertOptions
-func fillUpsertOptions(ctx context.Context, goCBUpsertOptions *gocb.UpsertOptions, upsertOptions *sgbucket.UpsertOptions) {
+// getPreserveExpiry returns whether PreserveExpiry should be set for upsert operations, taking into
+// account whether an explicit expiry has been set.
+func getPreserveExpiry(ctx context.Context, exp uint32, upsertOptions *sgbucket.UpsertOptions) bool {
 	if upsertOptions == nil {
-		return
+		return false
 	}
-	goCBUpsertOptions.PreserveExpiry = upsertOptions.PreserveExpiry
-	if goCBUpsertOptions.Expiry != 0 && upsertOptions.PreserveExpiry {
-		InfofCtx(ctx, KeyCRUD, "Expiry set on gocb.UpsertOptions, but sgbucket.UpsertOptions.PreserveExpiry is false. Force setting PreserveExpiry to false to allow write to proceed.")
-		goCBUpsertOptions.PreserveExpiry = false
-
+	if exp != 0 && upsertOptions.PreserveExpiry {
+		InfofCtx(ctx, KeyCRUD, "Expiry set on UpsertOptions, but sgbucket.UpsertOptions.PreserveExpiry is false. Force setting PreserveExpiry to false to allow write to proceed.")
+		return false
 	}
+	return upsertOptions.PreserveExpiry
 }
 
-// Fills in the GoCB MutateInOptions based on the passed in MutateInOptions
-func fillMutateInOptions(ctx context.Context, goCBMutateInOptions *gocb.MutateInOptions, mutateInOptions *sgbucket.MutateInOptions) {
+// getMutateInPreserveExpiry returns whether PreserveExpiry should be set for mutateIn operations.
+func getMutateInPreserveExpiry(ctx context.Context, exp uint32, mutateInOptions *sgbucket.MutateInOptions) bool {
 	if mutateInOptions == nil {
-		return
+		return false
 	}
-	goCBMutateInOptions.PreserveExpiry = mutateInOptions.PreserveExpiry
-	if goCBMutateInOptions.Expiry != 0 && mutateInOptions.PreserveExpiry {
-		InfofCtx(ctx, KeyCRUD, "Expiry set on gocb.MutateInOptions, but sgbucket.MutateInOptions.PreserveExpiry is false. Force setting PreserveExpiry to false to allow write to proceed.")
-		goCBMutateInOptions.PreserveExpiry = false
-
+	if exp != 0 && mutateInOptions.PreserveExpiry {
+		InfofCtx(ctx, KeyCRUD, "Expiry set on MutateInOptions, but sgbucket.MutateInOptions.PreserveExpiry is false. Force setting PreserveExpiry to false to allow write to proceed.")
+		return false
 	}
-
+	return mutateInOptions.PreserveExpiry
 }

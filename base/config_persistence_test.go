@@ -11,7 +11,6 @@ package base
 import (
 	"testing"
 
-	"github.com/couchbase/gocb/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +31,7 @@ func TestConfigPersistence(t *testing.T) {
 	sgCollection, ok := dataStore.(*Collection)
 	require.True(t, ok)
 
-	c := sgCollection.Collection
+	c := sgCollection
 
 	testCases := []struct {
 		name                  string
@@ -84,14 +83,14 @@ func TestConfigPersistence(t *testing.T) {
 			require.Error(t, updateErr)
 
 			// update with correct cas
-			updateCas, updateErr := cp.replaceRawConfig(c, configKey, updatedRawBody, gocb.Cas(insertCas))
+			updateCas, updateErr := cp.replaceRawConfig(c, configKey, updatedRawBody, insertCas)
 			require.NoError(t, updateErr)
 
 			// retrieve config, validate updated value
 			var updatedConfig map[string]any
 			loadCas, loadErr = cp.loadConfig(ctx, c, configKey, &updatedConfig)
 			require.NoError(t, loadErr)
-			assert.Equal(t, updateCas, gocb.Cas(loadCas))
+			assert.Equal(t, updateCas, loadCas)
 			assert.Equal(t, configBody["updated"], updatedConfig["updated"])
 
 			// retrieve raw config, validate updated value
@@ -101,7 +100,7 @@ func TestConfigPersistence(t *testing.T) {
 			assert.JSONEq(t, string(updatedRawBody), string(rawConfig))
 
 			// delete with incorrect cas
-			_, removeErr := cp.removeRawConfig(c, configKey, gocb.Cas(insertCas))
+			_, removeErr := cp.removeRawConfig(c, configKey, insertCas)
 			require.Error(t, removeErr)
 
 			// delete with correct cas
@@ -137,7 +136,7 @@ func TestXattrConfigPersistence(t *testing.T) {
 	require.True(t, ok)
 
 	// create config
-	c := sgCollection.Collection
+	c := sgCollection
 	cp := &XattrBootstrapPersistence{}
 	configBody := make(map[string]any)
 	configBody["sampleConfig"] = "value"
@@ -215,7 +214,7 @@ func TestConfigPersistenceXattrFormatMismatches(t *testing.T) {
 
 	sgCollection, ok := dataStore.(*Collection)
 	require.True(t, ok)
-	c := sgCollection.Collection
+	c := sgCollection
 
 	nonXattrConfigPersistence := &DocumentBootstrapPersistence{}
 	nonXattrConfigKey := "testNonXattrConfigKey"

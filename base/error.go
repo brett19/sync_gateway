@@ -9,13 +9,13 @@
 package base
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
-	"github.com/couchbase/gocb/v2"
-	"github.com/couchbase/gocbcore/v10/memd"
+	"github.com/couchbase/gocbcorex/memdx"
 	"github.com/couchbase/gomemcached"
 	sgbucket "github.com/couchbase/sg-bucket"
 	pkgerrors "github.com/pkg/errors"
@@ -121,37 +121,35 @@ func ErrorAsHTTPStatus(err error) (int, string) {
 
 	unwrappedErr := pkgerrors.Cause(err)
 
-	// Check for SGErrors
+	// Check for well-known sentinel errors
 	switch unwrappedErr {
-	case gocb.ErrDocumentNotFound, ErrNotFound:
+	case ErrNotFound:
 		return http.StatusNotFound, "missing"
-	case gocb.ErrDocumentExists, ErrAlreadyExists:
+	case ErrAlreadyExists:
 		return http.StatusConflict, "Conflict"
-	case gocb.ErrTimeout:
-		return http.StatusServiceUnavailable, "Database timeout error (gocb.ErrTimeout)"
-	case gocb.ErrOverload:
-		return http.StatusServiceUnavailable, "Database server is over capacity (gocb.ErrOverload)"
-	case gocb.ErrTemporaryFailure:
-		return http.StatusServiceUnavailable, "Database server is over capacity (gocb.ErrTemporaryFailure)"
-	case gocb.ErrValueTooLarge:
-		return http.StatusRequestEntityTooLarge, "Document too large!"
 	case ErrViewTimeoutError:
 		return http.StatusServiceUnavailable, unwrappedErr.Error()
 	case ErrReplicationLimitExceeded:
 		return http.StatusServiceUnavailable, unwrappedErr.Error()
 	}
 
-	// gocb V2 errors
-	if errors.Is(unwrappedErr, gocb.ErrDocumentNotFound) {
+	// gocbcorex / memdx errors
+	if errors.Is(unwrappedErr, memdx.ErrDocNotFound) {
 		return http.StatusNotFound, "missing"
 	}
-	if errors.Is(unwrappedErr, gocb.ErrDocumentExists) {
+	if errors.Is(unwrappedErr, memdx.ErrDocExists) {
 		return http.StatusConflict, "Conflict"
 	}
-	if errors.Is(unwrappedErr, gocb.ErrTimeout) {
-		return http.StatusServiceUnavailable, "Database timeout error (gocb.ErrTimeout)"
+	if errors.Is(unwrappedErr, context.DeadlineExceeded) {
+		return http.StatusServiceUnavailable, "Database timeout error"
 	}
-	if isKVError(unwrappedErr, memd.StatusTooBig) {
+	if errors.Is(unwrappedErr, memdx.ErrTmpFail) {
+		return http.StatusServiceUnavailable, "Database server is over capacity (temporary failure)"
+	}
+	if errors.Is(unwrappedErr, memdx.ErrValueTooLarge) {
+		return http.StatusRequestEntityTooLarge, "Document too large!"
+	}
+	if isKVError(unwrappedErr, memdx.StatusTooBig) {
 		return http.StatusRequestEntityTooLarge, "Document too large!"
 	}
 
@@ -229,7 +227,7 @@ func IsDocNotFoundError(err error) bool {
 		return true
 	}
 
-	if errors.Is(err, gocb.ErrDocumentNotFound) {
+	if errors.Is(err, memdx.ErrDocNotFound) {
 		return true
 	}
 
@@ -257,11 +255,9 @@ func IsTemporaryKvError(err error) bool {
 	}
 	// define list of temporary errors
 	temporaryKVError := []error{
-		ErrTimeout,                 // Sync Gateway client-side timeout
-		gocb.ErrTimeout,            // SDK op timeout.  Wrapped by gocb.ErrAmbiguousTimeout, gocb.ErrUnambiguousTimeout,
-		gocb.ErrOverload,           // SDK client-side pipeline queue full, request was not submitted to server
-		gocb.ErrTemporaryFailure,   // Couchbase Server returned temporary failure error
-		gocb.ErrCircuitBreakerOpen, // SDK client-side circuit breaker blocked request
+		ErrTimeout,                // Sync Gateway client-side timeout
+		context.DeadlineExceeded,  // context timeout
+		memdx.ErrTmpFail,          // Couchbase Server returned temporary failure error
 	}
 
 	// iterate through to check incoming error is one of them
@@ -279,7 +275,7 @@ func IsTimeoutError(err error) bool {
 		return false
 	}
 
-	if errors.Is(err, gocb.ErrTimeout) || errors.Is(err, ErrTimeout) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout) {
 		return true
 	}
 

@@ -23,9 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/couchbase/gocb/v2"
-	"github.com/couchbase/gocbcore/v10"
-	"github.com/couchbase/gocbcore/v10/memd"
+	"github.com/couchbase/gocbcorex"
+	"github.com/couchbase/gocbcorex/memdx"
 	"github.com/couchbase/gomemcached"
 	sgbucket "github.com/couchbase/sg-bucket"
 	"github.com/couchbaselabs/rosmar"
@@ -225,20 +224,12 @@ func (b BucketSpec) TLSConfig(ctx context.Context) *tls.Config {
 	return tlsConfig
 }
 
-func (b BucketSpec) GocbAuthenticator() (gocb.Authenticator, error) {
+func (b BucketSpec) GocbcorexAuth() (gocbcorex.Authenticator, error) {
 	var username, password string
 	if b.Auth != nil {
 		username, password, _ = b.Auth.GetCredentials()
 	}
-	return GoCBv2Authenticator(username, password, b.Certpath, b.Keypath)
-}
-
-func (b BucketSpec) GocbcoreAuthProvider() (gocbcore.AuthProvider, error) {
-	var username, password string
-	if b.Auth != nil {
-		username, password, _ = b.Auth.GetCredentials()
-	}
-	return GoCBCoreAuthConfig(username, password, b.Certpath, b.Keypath)
+	return GocbcorexAuthenticator(username, password, b.Certpath, b.Keypath)
 }
 
 func GetStatsVbSeqno(stats map[string]map[string]string, maxVbno uint16, useAbsHighSeqNo bool) (uuids map[uint16]uint64, highSeqnos map[uint16]uint64, seqErr error) {
@@ -338,8 +329,12 @@ func IsCasMismatch(err error) bool {
 
 	unwrappedErr := pkgerrors.Cause(err)
 
-	// GoCB V2 handling
-	if isKVError(unwrappedErr, memd.StatusKeyExists) || isKVError(unwrappedErr, memd.StatusNotStored) {
+	// gocbcorex handling
+	if isKVError(unwrappedErr, memdx.StatusKeyExists) || isKVError(unwrappedErr, memdx.StatusNotStored) {
+		return true
+	}
+
+	if errors.Is(unwrappedErr, memdx.ErrCasMismatch) {
 		return true
 	}
 

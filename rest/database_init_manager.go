@@ -102,16 +102,16 @@ func (m *DatabaseInitManager) InitializeDatabaseWithStatusCallback(ctx context.C
 
 	cc, ok := couchbaseCluster.(*base.CouchbaseCluster)
 	if !ok {
-		return nil, fmt.Errorf("DatabaseInitManager requires gocb.Cluster connection - had %T", couchbaseCluster)
+		return nil, fmt.Errorf("DatabaseInitManager requires CouchbaseCluster connection - had %T", couchbaseCluster)
 	}
 
-	connection, closeClusterConnection, err := cc.GetClusterConnectionForBucket(ctx, bucketName)
+	agent, closeAgentConnection, err := cc.GetAgentForBucket(ctx, bucketName)
 	if err != nil {
 		return nil, err
 	}
 
 	// Initialize ClusterN1QLStore for the bucket.  Scope and collection name are set per-operation
-	n1qlStore, err := base.NewClusterOnlyN1QLStore(connection, bucketName, "", "")
+	n1qlStore, err := base.NewClusterOnlyN1QLStore(agent, bucketName, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (m *DatabaseInitManager) InitializeDatabaseWithStatusCallback(ctx context.C
 
 	// Start a goroutine to perform the initialization
 	go func() {
-		defer closeClusterConnection()
+		defer closeAgentConnection()
 		defer couchbaseCluster.Close()
 		// worker.Run blocks until completion, and returns any error on doneChan.
 		worker.Run()

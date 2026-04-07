@@ -12,11 +12,12 @@ require (
 	github.com/couchbase/go-blip v0.0.0-20260106113615-002c1b20b67a
 	github.com/couchbase/gocb/v2 v2.12.1
 	github.com/couchbase/gocbcore/v10 v10.9.1
+	github.com/couchbase/gocbcorex v0.0.0-20260319214642-92fd2976fad9
 	github.com/couchbase/gomemcached v0.2.1
 	github.com/couchbase/sg-bucket v0.0.0-20260318163448-98d99b4d9cd0
 	github.com/couchbasedeps/fast-skiplist v0.0.0-20250722125747-e0dd031fe2ac
 	github.com/couchbaselabs/go-fleecedelta v0.0.0-20220909152808-6d09efa7a338
-	github.com/couchbaselabs/gocbconnstr v1.0.5
+	github.com/couchbaselabs/gocbconnstr/v2 v2.0.0
 	github.com/couchbaselabs/rosmar v0.0.0-20260326114257-7d426e469ef0
 	github.com/elastic/gosigar v0.14.4
 	github.com/felixge/fgprof v0.9.5
@@ -48,19 +49,21 @@ require (
 	github.com/couchbase/cbauth v0.1.13 // indirect
 	github.com/couchbase/go-couchbase v0.1.1 // indirect
 	github.com/couchbase/gocbcoreps v0.1.5-0.20260107140814-1c3a03f888f8 // indirect
+
 	github.com/couchbase/goprotostellar v1.0.5 // indirect
 	github.com/couchbase/goutils v0.1.2 // indirect
 	github.com/couchbase/tools-common/cloud/v8 v8.1.3 // indirect
 	github.com/couchbase/tools-common/fs v1.0.3 // indirect
 	github.com/couchbase/tools-common/testing v1.0.3 // indirect
 	github.com/couchbase/tools-common/types/v2 v2.2.2 // indirect
-	github.com/couchbaselabs/gocbconnstr/v2 v2.0.0 // indirect
+	github.com/couchbaselabs/gocbconnstr v1.0.5 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20240227163752-401108e1b7e7 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
@@ -85,6 +88,7 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/sys v0.42.0 // indirect
@@ -98,3 +102,5 @@ require (
 )
 
 replace github.com/coder/websocket => github.com/couchbasedeps/websocket v1.8.15-0.20260116134543-30951104b23a
+
+replace github.com/couchbase/gocbcorex => /Users/brett.lawson/couchbase/gocbcorex
