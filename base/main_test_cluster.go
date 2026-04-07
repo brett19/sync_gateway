@@ -128,42 +128,38 @@ func (c *tbpCluster) getBucketNames() ([]string, error) {
 
 // MgmtRequest sends a management request to the cluster and returns the response body, status code, and error.
 func (c *tbpCluster) MgmtRequest(method, path string, contentType string, body io.Reader) ([]byte, int, error) {
-	mgmtEps, err := c.agent.GetMgmtEndpoints()
+	ctx := context.Background()
+	mgmtEp, err := c.agent.GetMgmtEndpoint(ctx)
 	if err != nil {
-		return nil, 0, fmt.Errorf("couldn't get management endpoints: %w", err)
-	}
-	if len(mgmtEps) == 0 {
-		return nil, 0, fmt.Errorf("no management endpoints available for cluster %q", c.clusterSpec.Server)
+		return nil, 0, fmt.Errorf("couldn't get management endpoint: %w", err)
 	}
 	return MgmtRequest(
 		http.DefaultClient,
-		mgmtEps[0],
+		mgmtEp.Endpoint,
 		method,
 		path,
 		contentType,
-		c.clusterSpec.Username,
-		c.clusterSpec.Password,
+		mgmtEp.Username,
+		mgmtEp.Password,
 		body,
 	)
 }
 
 // GetCouchbaseServerVersion retrieves the Couchbase Server version via a gocbcorex.Agent
 func GetCouchbaseServerVersion(agent *gocbcorex.Agent, clusterSpec CouchbaseClusterSpec) (version *ComparableBuildVersion, ee bool, err error) {
-	mgmtEps, epsErr := agent.GetMgmtEndpoints()
+	ctx := context.Background()
+	mgmtEp, epsErr := agent.GetMgmtEndpoint(ctx)
 	if epsErr != nil {
-		return nil, false, fmt.Errorf("failed to get management endpoints: %w", epsErr)
-	}
-	if len(mgmtEps) == 0 {
-		return nil, false, fmt.Errorf("no management endpoints available")
+		return nil, false, fmt.Errorf("failed to get management endpoint: %w", epsErr)
 	}
 	output, status, err := MgmtRequest(
 		http.DefaultClient,
-		mgmtEps[0],
+		mgmtEp.Endpoint,
 		http.MethodGet,
 		"/pools/default",
 		"application/x-www-form-urlencoded",
-		clusterSpec.Username,
-		clusterSpec.Password,
+		mgmtEp.Username,
+		mgmtEp.Password,
 		nil,
 	)
 	if err != nil {

@@ -158,9 +158,13 @@ func NewCouchbaseCluster(ctx context.Context, clusterSpec CouchbaseClusterSpec,
 	forcePerBucketAuth bool, perBucketCreds PerBucketCredentialsConfig,
 	useXattrConfig bool, bucketMode BucketConnectionMode) (*CouchbaseCluster, error) {
 
-	tlsConfig, err := GocbcorexTLSConfig(ctx, Ptr(clusterSpec.TLSSkipVerify), clusterSpec.CACertpath)
-	if err != nil {
-		return nil, err
+	var tlsConfig *tls.Config
+	if ServerIsTLS(clusterSpec.Server) {
+		var err error
+		tlsConfig, err = GocbcorexTLSConfig(ctx, Ptr(clusterSpec.TLSSkipVerify), clusterSpec.CACertpath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	auth, err := GocbcorexAuthenticator(

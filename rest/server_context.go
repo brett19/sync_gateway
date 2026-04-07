@@ -1967,12 +1967,13 @@ func (sc *ServerContext) ObtainManagementEndpointsAndHTTPClient() ([]string, *ht
 		return nil, nil, fmt.Errorf("unable to obtain agent")
 	}
 
-	mgmtEps, err := sc.GoCBAgent.GetMgmtEndpoints()
+	ctx := context.Background()
+	mgmtEp, err := sc.GoCBAgent.GetMgmtEndpoint(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("unable to get management endpoints: %w", err)
+		return nil, nil, fmt.Errorf("unable to get management endpoint: %w", err)
 	}
 
-	return mgmtEps, sc.NoX509HTTPClient, nil
+	return []string{mgmtEp.Endpoint}, sc.NoX509HTTPClient, nil
 }
 
 // CheckPermissions is used for Admin authentication to check a CBS RBAC user.

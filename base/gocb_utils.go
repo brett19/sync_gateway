@@ -156,9 +156,11 @@ func NewClusterAgent(ctx context.Context, clusterSpec CouchbaseClusterSpec, opts
 	}
 
 	var tlsConfig *tls.Config
-	tlsConfig, err = GocbcorexTLSConfig(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create TLS config: %w", err)
+	if ServerIsTLS(clusterSpec.Server) {
+		tlsConfig, err = GocbcorexTLSConfig(ctx, &clusterSpec.TLSSkipVerify, clusterSpec.CACertpath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to create TLS config: %w", err)
+		}
 	}
 
 	agent, err := gocbcorex.CreateAgent(ctx, gocbcorex.AgentOptions{
